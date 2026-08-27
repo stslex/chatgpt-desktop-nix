@@ -107,8 +107,13 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - name: Install gnupg
-        run: sudo apt-get update && sudo apt-get install -y gnupg
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          # gnupg for the signature fixtures, binutils for `ar` (the .deb
+          # fixtures), zstandard so the zstd decompression-bomb case runs
+          # rather than skipping.
+          sudo apt-get install -y gnupg binutils python3-zstandard
       - name: Run updater and ELF tests
         run: PYTHONPATH="$PWD/tools:$PWD" python3 -m unittest discover -s tests -v
 

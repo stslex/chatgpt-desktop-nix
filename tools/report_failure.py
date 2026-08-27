@@ -63,9 +63,12 @@ KIND_DESCRIPTIONS = {
     ),
 }
 
-#: The updater sanitises versions to this shape before they reach a branch
-#: name, and the branch name is where this value comes from.
-VERSION_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+#: A Debian version may legitimately contain ':' (epoch), '~' (pre-release)
+#: and '+', all of which apt_trust.VERSION_RE permits. Rejecting them here
+#: would mean the reporter silently filed nothing for exactly the versions most
+#: likely to be unusual. Accept what the trust chain accepts, and sanitise for
+#: display rather than refusing.
+VERSION_RE = re.compile(r"^[A-Za-z0-9.+~:_-]{1,128}$")
 
 
 def gh(*args: str) -> str:

@@ -607,14 +607,19 @@ def read_deb_control(deb_path: str) -> dict[str, str]:
         with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as tar:
             found = None
             for member in tar.getmembers():
-                normalised = member.name.lstrip("./")
-                # A control archive describes files inside the package; a name
-                # that escapes its own root is malformed regardless of whether
-                # we would ever write it out.
-                if normalised.startswith("/") or ".." in normalised.split("/"):
+                # Check the name as it actually appears, BEFORE any
+                # normalisation. `"../control".lstrip("./")` is `"control"` --
+                # lstrip removes a character *set*, not a prefix, so
+                # normalising first erases the very component being looked for.
+                raw = member.name
+                if raw.startswith("/") or ".." in raw.split("/"):
                     raise TrustError(
-                        f"{deb_path}: control.tar member {member.name!r} has a "
+                        f"{deb_path}: control.tar member {raw!r} has a "
                         f"traversal-shaped name")
+                # Only then strip a leading "./", one prefix at a time.
+                normalised = raw
+                while normalised.startswith("./"):
+                    normalised = normalised[2:]
                 if normalised != "control":
                     continue
                 if not member.isfile():
@@ -835,8 +840,17 @@ def _decompress(name: str, blob: bytes) -> bytes:
         try:
             import zstandard  # type: ignore
         except ImportError as exc:  # pragma: no cover - environment dependent
-            raise TrustError("zstd control member requires the zstandard module") from exc
-        return zstandard.ZstdDecompressor().stream_reader(blob).read()
+            raise TrustError(
+                "zstd control member requires the zstandard module") from exc
+        try:
+            reader = zstandard.ZstdDecompressor().stream_reader(blob)
+            out = reader.read(MAX_INDEX_BYTES + 1)
+        except zstandard.ZstdError as exc:
+            raise TrustError(f"{name}: malformed zstd data ({exc})") from exc
+        if len(out) > MAX_INDEX_BYTES:
+            raise TrustError(
+                f"{name}: decompresses to more than {MAX_INDEX_BYTES} bytes")
+        return out
     if name.endswith(".tar"):
         return blob
     raise TrustError(f"unsupported control member compression: {name}")
