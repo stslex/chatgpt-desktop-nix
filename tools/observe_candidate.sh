@@ -35,7 +35,16 @@ backoff="${OBSERVE_BACKOFF:-5}"
 state=""
 oid=""
 
-errlog="$(mktemp)"
+# Diagnostics go here rather than into the string the object id is parsed out
+# of. Failing to create it is fail-closed anyway -- every ls-remote below would
+# fail its redirection and the script would exit 30 -- but saying so plainly
+# beats five confusing retries.
+errlog="$(mktemp)" || {
+    echo "could not create a temporary file for ls-remote diagnostics." >&2
+    echo "Proceeding would skip the same-version drift guard, so this run" >&2
+    echo "stops. A later scheduled run will retry the same candidate." >&2
+    exit 30
+}
 trap 'rm -f "$errlog"' EXIT
 
 for attempt in $(seq 1 "$attempts"); do

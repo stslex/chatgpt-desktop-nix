@@ -321,6 +321,18 @@ in
             f"README claims {claimed} properties; the script performs "
             f"{len(names)}")
 
+    # Any OTHER place the README states a count of these checks must agree
+    # too. The first version of this check looked only at the sentence above,
+    # and a second mention -- "the changed-file allowlist and eleven
+    # eligibility checks instead" -- stayed wrong.
+    for word, value in words.items():
+        for phrase in (f"{word} eligibility checks",
+                       f"{word} properties are read back"):
+            if phrase in readme.lower() and value != len(names):
+                problems.append(
+                    f"README says {phrase!r} but the script performs "
+                    f"{len(names)}")
+
     numbered = re.findall(r"^\s*\d+\. (.+)$", readme, re.M)
     if len(numbered) < len(names):
         problems.append(

@@ -629,6 +629,18 @@ class TestRegionInvariant(ElfTempMixin):
             R.assert_region_invariant(elf, grown)
         self.assertIn("shorter than the reviewed", str(ctx.exception))
 
+    def test_a_reviewed_region_with_no_filler_length_is_refused(self):
+        # Without this the clamp would silently produce an empty search window
+        # and relocation would fail with a confusing "no free range" error
+        # rather than saying the committed invariant is incomplete.
+        path = self.build()
+        elf = R.Elf64(path)
+        region = copy.deepcopy(R.describe_target_region(elf))
+        del region["fillerLength"]
+        with self.assertRaises(R.RelocationError) as ctx:
+            R.assert_region_invariant(elf, region)
+        self.assertIn("no filler length", str(ctx.exception))
+
     def test_zero_padding_is_no_longer_treated_as_filler(self):
         # A zero byte is not evidence of anything; only patchelf's own 0x58 is.
         self.assertNotIn(0x00, R.FILLER_BYTES)

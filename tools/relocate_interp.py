@@ -477,6 +477,12 @@ def assert_region_invariant(elf: Elf64, expected: dict) -> tuple[int, int]:
     # region at all. The reviewed length was enough when it was established, so
     # clamp to it.
     reviewed = expected.get("fillerLength", 0)
+    if reviewed <= 0:
+        raise RelocationError(
+            f"{elf.path}: the reviewed region records no filler length, so "
+            f"there is no reviewed extent to search. Re-establish the "
+            f"invariant by hand and commit it."
+        )
     return actual["fillerStart"], min(actual["fillerLength"], reviewed)
 
 

@@ -576,7 +576,8 @@ Settings → Rules → Rulesets → New branch ruleset:
 - Enforcement: Active
 - **Require a pull request before merging** — on
   - Required approvals: **0**. The updater's pull requests are constrained by
-    the changed-file allowlist and eleven eligibility checks instead; requiring
+    the changed-file allowlist and thirteen eligibility checks instead;
+    requiring
     an approval would mean no update could ever land unattended.
 - **Require status checks to pass** — on
   - Required check: **`ci-ok`** (this exact name; it is intentionally constant
