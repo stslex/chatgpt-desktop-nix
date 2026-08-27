@@ -1,5 +1,22 @@
 { pkgs, chatgpt }:
 
+let
+  # A genuinely generic dynamically-linked ELF: real glibc binary whose
+  # PT_INTERP names the path a downloaded toolchain would name. Nothing about
+  # it is Nix-aware, which is the point.
+  genericBinary = pkgs.runCommandCC "generic-interp-probe" { } ''
+    mkdir -p "$out/bin"
+    cat > probe.c <<'EOF'
+    #include <stdio.h>
+    int main(void) { printf("GENERIC-BINARY-RAN-OK\n"); return 0; }
+    EOF
+    cc -O0 -o "$out/bin/probe" probe.c
+    ${pkgs.patchelf}/bin/patchelf \
+      --set-interpreter /lib64/ld-linux-x86-64.so.2 \
+      --set-rpath "" "$out/bin/probe"
+  '';
+in
+
 # A bounded graphical start-up smoke test in a real NixOS VM.
 #
 # Everything else in checks.nix inspects the package statically. This actually
@@ -40,11 +57,18 @@ pkgs.testers.runNixOSTest {
       extraGroups = [ "video" ];
     };
 
-    # Chromium's sandbox needs unprivileged user namespaces. Assert the VM
-    # provides them rather than working around their absence.
-    boot.kernel.sysctl."user.max_user_namespaces" = 28633;
+    environment.systemPackages = [
+      chatgpt pkgs.xdotool pkgs.procps pkgs.bubblewrap genericBinary
+    ];
 
-    environment.systemPackages = [ chatgpt pkgs.xdotool pkgs.procps ];
+    # Deliberately NOT enabling programs.nix-ld. The default
+    # `environment.stub-ld` puts nix-ld at the generic loader path with no
+    # NIX_LD configured, which is the situation an ordinary NixOS user is in
+    # and the one the bwrap shim exists to fix. Enabling programs.nix-ld would
+    # make the bridge test pass for the wrong reason.
+    programs.nix-ld.enable = false;
+
+    boot.kernel.sysctl."user.max_user_namespaces" = 28633;
 
     # A Secret Service implementation, so the app's keyring probe has something
     # to talk to instead of erroring in a way that muddies the log.
@@ -135,14 +159,72 @@ pkgs.testers.runNixOSTest {
         machine.log("no fatal patterns in the startup log")
 
     with subtest("the renderer and GPU helpers are alive, not crash-looping"):
-        # Count zygote/renderer processes twice; a crash loop shows up as
-        # helpers that keep being replaced.
-        # Bracketed so the counting command does not count itself.
-        first = machine.succeed("pgrep -c -f '[C]hatGPT' || true").strip()
-        machine.sleep(15)
-        second = machine.succeed("pgrep -c -f '[C]hatGPT' || true").strip()
-        machine.log(f"ChatGPT processes: {first} then {second}")
-        assert int(second) > 0, "every ChatGPT process exited"
+        # A crash loop keeps the *count* roughly constant while replacing the
+        # processes underneath, so counting alone cannot detect it. Compare the
+        # actual PID sets: a healthy Electron keeps the same helpers.
+        def helper_pids():
+            out = machine.succeed("pgrep -f '[C]hatGPT' || true").strip()
+            return {line.strip() for line in out.splitlines() if line.strip()}
+
+        first = helper_pids()
+        assert first, "no ChatGPT processes are running at all"
+        machine.sleep(20)
+        second = helper_pids()
+        assert second, "every ChatGPT process exited"
+
+        survived = first & second
+        replaced = first - second
+        machine.log(f"helpers: {len(first)} -> {len(second)}, "
+                    f"{len(survived)} survived, {len(replaced)} replaced")
+
+        # Some churn is normal (a utility process finishing its work). A
+        # majority being replaced inside 20 seconds is not.
+        assert len(survived) >= len(first) / 2, (
+            f"{len(replaced)} of {len(first)} helper processes were replaced "
+            f"within 20s, which is what a crash loop looks like.\n"
+            f"before: {sorted(first)}\nafter:  {sorted(second)}"
+        )
+
+    with subtest("the generic binary fails WITHOUT the bridge"):
+        # Baseline. environment.stub-ld puts nix-ld at the generic loader path
+        # with no NIX_LD set, so a downloaded-toolchain-shaped binary cannot
+        # start. If this ever succeeds, the test below proves nothing.
+        rc, out = machine.execute(
+            "su - alice -c '${pkgs.bubblewrap}/bin/bwrap --unshare-user "
+            "--unshare-net --ro-bind / / --proc /proc --dev /dev "
+            "-- ${genericBinary}/bin/probe' 2>&1")
+        machine.log(f"without the bridge: rc={rc} {out.strip()[:200]}")
+        assert "GENERIC-BINARY-RAN-OK" not in out, (
+            "the generic binary ran without the bridge, so this host already "
+            "provides NIX_LD and the bridge test below would be vacuous"
+        )
+
+    with subtest("the generic binary RUNS through the packaged bwrap bridge"):
+        # The real thing: the package's own bwrap, real bubblewrap underneath,
+        # a Codex-shaped argv with filesystem mounts, and a genuinely generic
+        # dynamically-linked ELF that must actually execute.
+        shim = "${chatgpt.bwrapShim}/bin/bwrap"
+        rc, out = machine.execute(
+            f"su - alice -c '{shim} --unshare-user --unshare-net "
+            "--ro-bind / / --proc /proc --dev /dev "
+            "-- ${genericBinary}/bin/probe' 2>&1")
+        machine.log(f"through the bridge: rc={rc} {out.strip()[:200]}")
+        assert "GENERIC-BINARY-RAN-OK" in out, (
+            f"the generic binary did not run through the bridge (rc={rc}):\n{out}"
+        )
+        assert rc == 0, f"bridge exited {rc}"
+
+    with subtest("the shim does not disturb an ordinary sandboxed command"):
+        shim = "${chatgpt.bwrapShim}/bin/bwrap"
+        machine.succeed(
+            f"su - alice -c '{shim} --unshare-user --ro-bind / / "
+            "-- ${pkgs.coreutils}/bin/true'")
+
+    with subtest("bundled Codex actually executes"):
+        version = machine.succeed(
+            "${chatgpt}/lib/chatgpt/resources/codex --version").strip()
+        machine.log(f"codex: {version}")
+        assert version, "codex --version produced no output"
 
     with subtest("bundled helpers run inside the VM"):
         machine.succeed(
@@ -161,5 +243,9 @@ pkgs.testers.runNixOSTest {
         machine.sleep(5)
         remaining = machine.succeed("pgrep -c -f '[C]hatGPT' || true").strip()
         machine.log(f"processes left after shutdown: {remaining}")
+        assert remaining == "0", (
+            f"{remaining} ChatGPT processes survived shutdown; the app leaves "
+            f"orphans behind"
+        )
   '';
 }

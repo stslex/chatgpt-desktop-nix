@@ -25,9 +25,69 @@ already enforced by CI on every build.
 
 ## Before starting
 
+### Pin the exact revision under test
+
+This acceptance is for a specific commit, not for whatever `main` happens to
+point at. Take the pull request's head:
+
 ```sh
-nix build github:stslex/chatgpt-desktop-nix#chatgpt -L
+gh pr view 1 --repo stslex/chatgpt-desktop-nix --json headRefOid --jq .headRefOid
 ```
+
+and use that SHA everywhere below. Replace `<REV>` with it.
+
+```sh
+nix build "github:stslex/chatgpt-desktop-nix/<REV>#chatgpt" -L
+```
+
+### `nix build` alone does not give you a desktop entry
+
+It produces a store path and a `result` symlink. Nothing is installed, nothing
+appears in the launcher, and the `codex://` deep link used by OAuth will not be
+registered — so step 1 and step 2 below cannot be performed from a bare
+`nix build`. Use one of these instead.
+
+**Declarative (preferred).** Add to your Home Manager configuration temporarily:
+
+```nix
+{
+  inputs.chatgpt-acceptance.url =
+    "github:stslex/chatgpt-desktop-nix/<REV>";
+
+  # in your home-manager configuration:
+  home.packages = [
+    inputs.chatgpt-acceptance.packages.${pkgs.system}.chatgpt
+  ];
+}
+```
+
+then `home-manager switch`. This installs the desktop entry and MIME handlers
+the way a real user would have them. Remove the input again once acceptance is
+done.
+
+**Non-declarative (diagnostic only).** If you would rather not touch your
+configuration:
+
+```sh
+nix profile install "github:stslex/chatgpt-desktop-nix/<REV>#chatgpt"
+```
+
+This is explicitly a diagnostic shortcut. It bypasses your normal configuration,
+leaves state in your Nix profile, and is not how the package is meant to be
+consumed. Remove it afterwards:
+
+```sh
+nix profile list                       # find the index
+nix profile remove <index>
+```
+
+For the XDG database to pick the entry up you may need:
+
+```sh
+update-desktop-database ~/.nix-profile/share/applications 2>/dev/null || true
+```
+
+### Capture the log
 
 Keep a terminal tailing the app's own output for the whole session — several
 checks below are about what does *not* appear there.

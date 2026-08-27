@@ -48,7 +48,7 @@ nix run github:stslex/chatgpt-desktop-nix
     nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
       modules = [
-        {
+        ({ pkgs, ... }: {
           nixpkgs.overlays = [ chatgpt-desktop.overlays.default ];
 
           # ChatGPT Desktop is proprietary.
@@ -59,7 +59,7 @@ nix run github:stslex/chatgpt-desktop-nix
 
           # The Secret Service provider the app stores its session in.
           services.gnome.gnome-keyring.enable = true;
-        }
+        })
       ];
     };
   };
@@ -266,14 +266,27 @@ writable mirror and points the app at it with
 shipped `app.asar` reads for this.
 
 The mirror lives under `$XDG_CACHE_HOME/chatgpt-desktop-nix/resources/`, keyed
-by package version and a hash of the upstream resources. It symlinks the large
-immutable resources (`app.asar` alone is ~270 MB, `codex` ~265 MB) and copies
-only the `plugins` subtree that actually gets rewritten. Publication is atomic:
-staged in a temporary directory, flushed with `sync`, marked complete, then
-`mv -T`'d into place. A directory without its completion marker is treated as an
-interrupted build and discarded rather than trusted. Concurrent launches
-serialise on an `flock`, and staging directories orphaned by a `SIGKILL` are
-swept on the next run.
+by package version **and this build's own store-path hash** — not by the
+upstream version alone, so rebuilding the same ChatGPT release against a
+different nixpkgs revision cannot reuse a cache whose copied native modules were
+patched for the old closure. It symlinks the large immutable resources
+(`app.asar` alone is ~270 MB, `codex` ~265 MB) and copies only the `plugins`
+subtree that actually gets rewritten. Publication is atomic: staged in a
+temporary directory, flushed with `sync`, marked complete, then `mv -T`'d into
+place. A directory without its completion marker is treated as an interrupted
+build and discarded rather than trusted. Concurrent launches serialise on an
+`flock`, and each launch holds a shared lock on its own entry for as long as it
+runs.
+
+**Caches for older versions are deliberately not deleted.** Doing it safely
+needs the exclusive lock held across the deletion, and the obvious test does not
+provide that: `flock --nonblock <lock> --command true` releases the lock the
+moment `true` exits, leaving a window in which another launch can legitimately
+claim the cache about to be removed. The cost of keeping them is bounded and
+visible — roughly 50 MB per upstream version under
+`$XDG_CACHE_HOME/chatgpt-desktop-nix/resources`, which is always safe to delete
+by hand when the app is not running. The cost of collecting wrongly is pulling
+resources out from under a running application.
 
 ### The Codex command sandbox
 
@@ -282,16 +295,40 @@ runs toolchains it downloaded itself — generic Linux builds of git, node, pyth
 or pnpm with `/lib64/ld-linux-x86-64.so.2` baked into their ELF headers, which
 is not a real loader on NixOS.
 
-Rather than requiring you to enable `programs.nix-ld` system-wide, the package
-ships its own `bwrap` (`nix/bwrap-shim.c`) placed ahead of the real one on
-`PATH`, and only when `/etc/NIXOS` exists. It splices three arguments in before
-bubblewrap's `--` terminator — a read-only bind of `nix-ld` over the resolved
-generic loader path, plus `NIX_LD` and `NIX_LD_LIBRARY_PATH` — and then execs
-the real `bwrap`. The bind exists only inside the sandbox namespace.
+NixOS's default `environment.stub-ld` puts a stub at that path whose entire
+behaviour is to print `Could not start dynamically linked executable` and exit
+127. It is not `nix-ld` and it ignores `NIX_LD`, so the loader has to be
+replaced, not merely configured.
 
-If the generic loader path cannot be resolved, the shim execs the real `bwrap`
-with the argument vector untouched. Losing the downloaded-toolchain bridge is a
-degraded feature; breaking the sandbox would be a defect.
+Rather than requiring you to enable `programs.nix-ld` system-wide, the package
+ships its own `bwrap` (`nix/bwrap-shim.c`), placed ahead of the real one on
+`PATH` and only when `/etc/NIXOS` exists. It injects a read-only bind of
+`nix-ld` plus `NIX_LD` and `NIX_LD_LIBRARY_PATH`, then execs the real `bwrap`.
+The bind exists only inside the sandbox namespace.
+
+Two details make it actually work, and both were established by measurement
+against bubblewrap 0.11.2 rather than assumed:
+
+- **The bind target is the *resolved* path**, not `/lib64/ld-linux-x86-64.so.2`
+  itself. bwrap refuses to bind over a symlink, and on NixOS that path is one;
+  binding over what it resolves to — an ordinary file in the store — works, and
+  the symlink then leads to our `nix-ld`.
+- **The arguments go after all of the caller's options**, immediately before the
+  command. Placed first, a later `--ro-bind / /` (the shape Codex uses) simply
+  covers the bind and it has no effect at all.
+
+Finding that insertion point means parsing bwrap's option grammar properly.
+Scanning for the first bare `--` is wrong: several options take arbitrary
+values, so `bwrap --setenv FOO -- -- cmd` has `--` as the *value* of `--setenv`.
+The shim carries bubblewrap's complete option table with each option's argument
+count. If it meets anything it cannot account for — an unrecognised option, a
+truncated one, or `--args FD` whose options come from a file descriptor it
+cannot read — it execs the real `bwrap` with the argument vector untouched.
+Losing the bridge degrades a feature; guessing wrong would corrupt the sandbox.
+
+The VM test proves this end to end on a host with only the default stub: the
+same generic binary exits 127 without the bridge and prints its output through
+it.
 
 ## The automatic updater
 

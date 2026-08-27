@@ -62,7 +62,7 @@
             shellHook = ''
               echo "chatgpt-desktop-nix dev shell"
               echo "  python3 tools/update.py --check   # signed update discovery"
-              echo "  python3 -m pytest tests -q        # updater + ELF tests"
+              echo "  PYTHONPATH=\$PWD/tools:\$PWD python3 -m unittest discover -s tests"
               echo "  nix flake check                   # everything"
             '';
           };

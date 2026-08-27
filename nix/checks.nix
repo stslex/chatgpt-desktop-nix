@@ -336,11 +336,17 @@ in
     ${app}/resources/cua_node/bin/node --version
 
     echo "bundled codex"
-    ${app}/resources/codex --version 2>&1 | head -1 || true
-    test -x ${app}/resources/codex
+    # Actually run it. `test -x` proves a permission bit, not that the binary
+    # loads, and `|| true` would swallow the failure it exists to catch.
+    codex_version="$(${app}/resources/codex --version)"
+    echo "  $codex_version"
+    case "$codex_version" in
+      *codex*) ;;
+      *) echo "codex --version produced unexpected output" >&2; exit 1 ;;
+    esac
 
     echo "tectonic (static)"
-    test -x ${app}/resources/plugins/openai-bundled/plugins/latex/bin/tectonic
+    ${app}/resources/plugins/openai-bundled/plugins/latex/bin/tectonic --version
   '';
 
   node-glibc-detection = check "node-glibc-detection" [ pkgs.python3 ] ''
@@ -379,34 +385,123 @@ in
 
   # --- bwrap / nix-ld bridge ---------------------------------------------
 
-  bwrap-bridge = check "bwrap-bridge" [ pkgs.python3 ] ''
-    shim=${chatgpt.bwrapShim}/bin/bwrap
-    test -x "$shim"
+  bwrap-shim-parser = check "bwrap-shim-parser" [ pkgs.python3 ] ''
+    # Drive the shim's bubblewrap option parser directly. The splice point has
+    # to land after ALL of the caller's options: a caller's own --clearenv or
+    # --setenv appearing later would override ours, and a bind placed before
+    # their filesystem mounts is simply covered by them.
+    trace=${chatgpt.bwrapShimTest}/bin/bwrap-trace
+    test -x "$trace"
 
-    echo "the shim must splice the nix-ld bind before bwrap's -- terminator"
-    export CHATGPT_BWRAP_SHIM_TRACE="$PWD/trace.txt"
-    "$shim" --unshare-user --unshare-net -- /bin/true arg1
-    cat trace.txt
+    run() {
+      rm -f out.txt
+      CHATGPT_BWRAP_SHIM_TRACE="$PWD/out.txt" "$trace" "$@" >/dev/null 2>&1 || true
+    }
+
+    python3 - <<'PY' > cases.json
+    import json
+    json.dump([
+      {
+        "name": "Codex-shaped argv",
+        "argv": ["--unshare-user", "--unshare-net", "--ro-bind", "/", "/",
+                 "--tmpfs", "/tmp", "--", "/bin/sh", "-c", "id"],
+        "rewritten": True,
+        "tail": ["--", "/bin/sh", "-c", "id"],
+      },
+      {
+        "name": "'--' as the VALUE of --setenv is not the separator",
+        "argv": ["--setenv", "FOO", "--", "--ro-bind", "/", "/", "--",
+                 "/bin/true"],
+        "rewritten": True,
+        "tail": ["--", "/bin/true"],
+      },
+      {
+        "name": "no '--' separator at all",
+        "argv": ["--unshare-user", "--ro-bind", "/", "/", "/bin/echo", "hi"],
+        "rewritten": True,
+        "tail": ["/bin/echo", "hi"],
+      },
+      {
+        "name": "three-arity --overlay is consumed correctly",
+        "argv": ["--overlay", "/a", "/b", "/c", "--ro-bind", "/", "/", "--",
+                 "/bin/true"],
+        "rewritten": True,
+        "tail": ["--", "/bin/true"],
+      },
+      {
+        "name": "--args hides options, so pass through untouched",
+        "argv": ["--args", "3", "--ro-bind", "/", "/", "--", "/bin/true"],
+        "rewritten": False,
+      },
+      {
+        "name": "an unknown option means pass through untouched",
+        "argv": ["--some-future-option", "x", "--", "/bin/true"],
+        "rewritten": False,
+      },
+      {
+        "name": "a truncated option means pass through untouched",
+        "argv": ["--unshare-user", "--setenv", "ONLYONE"],
+        "rewritten": False,
+      },
+    ], open("cases.json", "w"))
+    PY
 
     python3 - <<'PY'
-    lines = open("trace.txt").read().split("\n")
-    mode, args = lines[0], [l for l in lines[1:] if l]
-    print("mode:", mode)
-    if mode == "passthrough":
-        # No generic loader on this builder; the shim must degrade to an
-        # untouched argv rather than breaking the sandbox.
-        assert args == ["--unshare-user", "--unshare-net", "--", "/bin/true", "arg1"], args
-        print("no generic loader present; shim passed argv through unchanged")
-    else:
-        assert mode == "rewritten", mode
-        sep = args.index("--")
-        head, tail = args[:sep], args[sep:]
-        assert tail == ["--", "/bin/true", "arg1"], tail
-        assert head[:2] == ["--unshare-user", "--unshare-net"], head
-        assert "--ro-bind" in head, head
-        assert "NIX_LD" in head and "NIX_LD_LIBRARY_PATH" in head, head
-        print("shim inserted:", head[2:])
+    import json, os, subprocess, sys
+    trace = "${chatgpt.bwrapShimTest}/bin/bwrap-trace"
+    failures = []
+    for case in json.load(open("cases.json")):
+        out = os.path.abspath("out.txt")
+        if os.path.exists(out):
+            os.unlink(out)
+        env = dict(os.environ, CHATGPT_BWRAP_SHIM_TRACE=out)
+        subprocess.run([trace] + case["argv"], env=env,
+                       capture_output=True)
+        produced = os.path.exists(out)
+        if produced != case["rewritten"]:
+            failures.append(
+                f"{case['name']}: expected rewritten={case['rewritten']}, "
+                f"got {produced}")
+            continue
+        if not produced:
+            print(f"  ok  {case['name']} (passed through)")
+            continue
+        args = [l for l in open(out).read().split("\n") if l]
+        tail = args[-len(case["tail"]):]
+        if tail != case["tail"]:
+            failures.append(f"{case['name']}: tail is {tail}, expected "
+                            f"{case['tail']}")
+            continue
+        head = args[:-len(case["tail"])]
+        for needed in ("--ro-bind", "--setenv", "NIX_LD", "NIX_LD_LIBRARY_PATH"):
+            if needed not in head:
+                failures.append(f"{case['name']}: {needed} missing from {head}")
+        # Everything the caller passed must still precede our injection.
+        caller_head = case["argv"][:len(case["argv"]) - len(case["tail"])]
+        if head[:len(caller_head)] != caller_head:
+            failures.append(
+                f"{case['name']}: caller options were reordered: "
+                f"{head[:len(caller_head)]} != {caller_head}")
+        else:
+            print(f"  ok  {case['name']}")
+    if failures:
+        for f in failures:
+            print("  FAIL", f, file=sys.stderr)
+        sys.exit(1)
+    print("every splice point is correct")
     PY
+  '';
+
+  bwrap-shim-production-has-no-trace-hook =
+    check "bwrap-shim-production-has-no-trace-hook" [ ] ''
+    # The production binary must not contain the trace hook at all. An
+    # inherited environment variable that suppresses the sandbox and truncates
+    # a file of the caller's choosing is not a debugging aid, it is a hole.
+    if grep -q 'CHATGPT_BWRAP_SHIM_TRACE' ${chatgpt.bwrapShim}/bin/bwrap; then
+      echo "the production shim contains the trace hook" >&2
+      exit 1
+    fi
+    echo "production shim has no trace hook"
   '';
 
   # --- writable plugin cache ---------------------------------------------
@@ -433,27 +528,27 @@ in
     root="$XDG_CACHE_HOME/t"
 
     echo "--- first launch builds the cache ---"
-    out1=$(bash drive.sh "$res" "$root" key1)
-    test -e "$out1/.complete"
-    test -d "$out1/plugins"
-    test -L "$out1/app.asar"
-    echo "  published at $out1, app.asar symlinked, plugins copied"
+    pub1=$(bash drive.sh "$res" "$root" key1)
+    test -e "$pub1/.complete"
+    test -d "$pub1/plugins"
+    test -L "$pub1/app.asar"
+    echo "  published at $pub1, app.asar symlinked, plugins copied"
 
     echo "--- the plugins copy must be writable ---"
-    touch "$out1/plugins/openai-bundled/.writetest"
+    touch "$pub1/plugins/openai-bundled/.writetest"
 
     echo "--- second launch reuses it ---"
-    out2=$(bash drive.sh "$res" "$root" key1)
-    test "$out1" = "$out2"
-    test -e "$out2/plugins/openai-bundled/.writetest"
+    pub2=$(bash drive.sh "$res" "$root" key1)
+    test "$pub1" = "$pub2"
+    test -e "$pub2/plugins/openai-bundled/.writetest"
     echo "  reused without rebuilding"
 
     echo "--- a partial cache is discarded, not trusted ---"
-    chmod -R u+w "$out1"; rm -f "$out1/.complete"; rm -rf "$out1/plugins"
-    out3=$(bash drive.sh "$res" "$root" key1)
-    test -e "$out3/.complete"
-    test -d "$out3/plugins"
-    test ! -e "$out3/plugins/openai-bundled/.writetest"
+    chmod -R u+w "$pub1"; rm -f "$pub1/.complete"; rm -rf "$pub1/plugins"
+    pub3=$(bash drive.sh "$res" "$root" key1)
+    test -e "$pub3/.complete"
+    test -d "$pub3/plugins"
+    test ! -e "$pub3/plugins/openai-bundled/.writetest"
     echo "  rebuilt from scratch after an interrupted publish"
 
     echo "--- concurrent launches converge on one cache ---"
@@ -465,55 +560,45 @@ in
     test -e "$(cat distinct)/.complete"
     echo "  6 concurrent launches produced exactly one published cache"
 
-    echo "--- an unused previous version's cache is collected ---"
-    bash drive.sh "$res" "$root" key3 > /dev/null
-    test ! -e "$root/key2"
-    echo "  previous version's cache removed"
-
-    echo "--- a cache still IN USE by another instance is NOT collected ---"
-    # This is the important one. The build lock is per-key, so it says nothing
-    # about a different key -- and a different key is exactly what an older
-    # running instance holds. Simulate that instance by taking the shared
-    # in-use lock, then publish a new key and confirm the old cache survives.
+    echo "--- another version's cache is NOT collected ---"
+    # Collecting one safely needs the exclusive lock held across the deletion.
+    # `flock <lock> --command true` releases it the moment `true` exits, so
+    # between the check and the `rm -rf` another launch can legitimately claim
+    # the cache being deleted. Not collecting is the safe choice; the cost is
+    # bounded and visible.
     bash drive.sh "$res" "$root" keyA > /dev/null
-    test -d "$root/keyA"
-
-    # Hold the lock the same way the launcher does: a fixed descriptor
-    # inherited across exec. Using `flock <file> <command>` here would be
-    # wrong — it forks, so killing it leaves the child holding the lock and the
-    # release half of this test could never pass.
-    cat > holder.sh <<'SH'
-    exec 9>>"$1"
-    flock --shared --nonblock 9 || exit 1
-    exec sleep 300
-    SH
-
-    bash holder.sh "$root/.keyA.inuse.lock" &
-    holder=$!
-    sleep 1
     bash drive.sh "$res" "$root" keyB > /dev/null
-    if [ ! -d "$root/keyA" ]; then
-      echo "keyA was deleted while another instance still held it" >&2
-      kill $holder 2>/dev/null || true
-      exit 1
-    fi
-    echo "  in-use cache survived a concurrent publish of another version"
+    test -d "$root/keyA"
+    test -d "$root/keyB"
+    echo "  keyA survived a publish of keyB"
 
-    echo "--- once released, it is collected ---"
-    kill $holder 2>/dev/null || true
-    wait $holder 2>/dev/null || true
-    # The launcher also skips entries touched in the last 12 hours as a second
-    # line of defence, so age this one past that window before collecting.
-    touch -d '2 days ago' "$root/.keyA.inuse.lock"
+    echo "--- another key's staging directory is left alone ---"
+    # Staging cleanup runs under this key's build lock only, so it has no
+    # standing to remove a directory another key may be writing right now.
+    mkdir -p "$root/.staging-keyOTHER.XXXX"
     bash drive.sh "$res" "$root" keyC > /dev/null
-    test ! -e "$root/keyA"
-    echo "  released cache removed on the next publish"
+    test -d "$root/.staging-keyOTHER.XXXX"
+    echo "  a different key's staging dir was not swept"
+    rm -rf "$root/.staging-keyOTHER.XXXX"
 
-    echo "--- abandoned staging dirs are swept ---"
-    mkdir -p "$root/.staging-orphan.XXX"
+    echo "--- this key's own abandoned staging dir IS swept ---"
+    mkdir -p "$root/.staging-key4.ORPHAN"
     bash drive.sh "$res" "$root" key4 > /dev/null
-    test ! -e "$root/.staging-orphan.XXX"
-    echo "  orphaned staging directory removed"
+    test ! -e "$root/.staging-key4.ORPHAN"
+    echo "  our own orphaned staging directory removed"
+
+    echo "--- simultaneous publishes of DIFFERENT keys all succeed ---"
+    rm -rf "$root"
+    for k in kA kB kC kD; do bash drive.sh "$res" "$root" "$k" > "p.$k" & done
+    wait
+    for k in kA kB kC kD; do
+      # Deliberately not named "out": that is Nix's output path, and shadowing
+      # it makes the wrapper's final `touch "$out"` land on the cache instead.
+      published="$(cat "p.$k")"
+      test -e "$published/.complete" || { echo "$k did not publish" >&2; exit 1; }
+      test -d "$published/plugins"   || { echo "$k has no plugins" >&2; exit 1; }
+    done
+    echo "  four different keys published concurrently without interfering"
   '';
 
   # --- desktop integration ------------------------------------------------
