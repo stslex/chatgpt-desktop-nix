@@ -210,6 +210,7 @@ def parse_control_paragraph(text: str) -> dict[str, str]:
     Continuation lines (leading space/tab) are folded into the previous field.
     """
     fields: dict[str, str] = {}
+    seen: dict[str, str] = {}
     current: str | None = None
     for raw in text.splitlines():
         if not raw.strip():
@@ -223,8 +224,16 @@ def parse_control_paragraph(text: str) -> dict[str, str]:
         if not sep:
             raise TrustError(f"malformed control line: {raw!r}")
         current = name.strip()
-        if current in fields:
-            raise TrustError(f"duplicate control field {current!r}")
+        # Debian control field names are case-insensitive, so "Package" and
+        # "package" are the same field. Comparing case-sensitively would let a
+        # second, different value ride along unnoticed and leave which one wins
+        # up to dictionary order.
+        lowered = current.lower()
+        if lowered in seen:
+            raise TrustError(
+                f"duplicate control field {current!r} (already seen as "
+                f"{seen[lowered]!r}); names are case-insensitive")
+        seen[lowered] = current
         fields[current] = value.strip()
     return fields
 
@@ -330,11 +339,29 @@ def verify_inrelease(inrelease_bytes: bytes, keyring_path: str) -> str:
 
 
 def _parse_rfc822_date(raw: str, field: str) -> int:
+    """Parse an RFC 822 date, turning every malformation into a TrustError.
+
+    ``parsedate_to_datetime`` raises ValueError for a range of inputs rather
+    than returning None, and a naive datetime for one without a timezone.
+    Letting either escape would surface as an unclassified crash instead of the
+    fail-closed trust failure it is.
+    """
+    import datetime
     import email.utils
-    parsed = email.utils.parsedate_to_datetime(raw)
+    try:
+        parsed = email.utils.parsedate_to_datetime(raw)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise TrustError(f"unparsable {field}: {raw!r} ({exc})") from exc
     if parsed is None:
         raise TrustError(f"unparsable {field}: {raw!r}")
-    return int(parsed.timestamp())
+    if parsed.tzinfo is None:
+        # No timezone at all. Assume UTC rather than the runner's local zone,
+        # which would make the same metadata age differently by machine.
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    try:
+        return int(parsed.timestamp())
+    except (OverflowError, OSError, ValueError) as exc:
+        raise TrustError(f"{field} is out of range: {raw!r}") from exc
 
 
 def release_date(release_text: str) -> "int | None":
@@ -427,9 +454,19 @@ def check_distribution_identity(release_text: str,
     """
     fields = parse_control_paragraph(release_text.split("\nMD5Sum:")[0])
 
+    # Suite and Codename are required, not merely checked when present. The
+    # live origin publishes both; a Release lacking them is not the shape this
+    # package tracks, and accepting it would mean a signed index for some other
+    # distribution could pass simply by omitting the fields that identify it.
     for field, expected in (("Suite", APT_SUITE), ("Codename", APT_SUITE)):
         actual = fields.get(field)
-        if actual is not None and actual != expected:
+        if actual is None:
+            raise TrustError(
+                f"signed Release has no {field} field. This origin publishes "
+                f"one, so its absence means this is not the index this package "
+                f"tracks."
+            )
+        if actual != expected:
             raise TrustError(
                 f"signed Release declares {field}: {actual!r}, expected "
                 f"{expected!r}. This index is not for the distribution this "
@@ -550,6 +587,12 @@ def sanitize_filename(filename: str) -> str:
             raise TrustError(f"unsafe path component in Filename: {filename!r}")
         if part.startswith("%2e") or part.startswith("%2E"):
             raise TrustError(f"encoded traversal in Filename: {filename!r}")
+    for char, label in (("?", "query"), ("#", "fragment"), ("@", "userinfo")):
+        if char in filename:
+            raise TrustError(
+                f"Filename contains a {label} marker {char!r}: {filename!r}. "
+                f"It names a file in the pool, not a URL."
+            )
     if not filename.startswith("pool/"):
         raise TrustError(
             f"Filename must live under the pool/ prefix, got {filename!r}"
@@ -784,11 +827,21 @@ def _ar_members(path: str, ordered: bool = False):
     `dpkg` being present, and so CI can run it on a bare Python.
     """
     out: list[tuple[str, bytes]] = []
+    total = os.path.getsize(path)
+    if total > MAX_DEB_BYTES:
+        raise TrustError(f"{path}: implausibly large archive ({total} bytes)")
     with open(path, "rb") as fh:
         if fh.read(8) != b"!<arch>\n":
             raise TrustError(f"{path}: not an ar archive")
         long_names = b""
+        members = 0
         while True:
+            members += 1
+            if members > 64:
+                # A Debian archive has three or four members. A file claiming
+                # hundreds is malformed, and bounding this keeps a crafted
+                # archive from driving an unbounded loop.
+                raise TrustError(f"{path}: implausibly many ar members")
             header = fh.read(60)
             if len(header) == 0:
                 break
@@ -805,11 +858,26 @@ def _ar_members(path: str, ordered: bool = False):
             if size > MAX_DEB_BYTES:
                 raise TrustError(
                     f"{path}: ar member {name!r} declares an implausible size")
+            if fh.tell() + size > total:
+                raise TrustError(
+                    f"{path}: member {name!r} claims {size} bytes, which runs "
+                    f"past the end of the {total}-byte archive")
             data = fh.read(size)
             if len(data) != size:
                 raise TrustError(f"{path}: truncated ar member {name!r}")
             if size % 2:
-                fh.read(1)
+                # ar pads odd-sized members to an even boundary with '\n'.
+                # Reading it blindly would let a truncated archive shift every
+                # later header by one byte and be parsed as something else.
+                pad = fh.read(1)
+                if pad == b"":
+                    raise TrustError(
+                        f"{path}: archive ends inside the padding after "
+                        f"member {name!r}")
+                if pad != b"\n":
+                    raise TrustError(
+                        f"{path}: member {name!r} is padded with {pad!r}, "
+                        f"expected a newline")
             if name == "//":
                 long_names = data
                 continue
@@ -844,28 +912,45 @@ def _ar_members(path: str, ordered: bool = False):
 
 
 def _gunzip_bounded(blob: bytes, limit: int, what: str) -> bytes:
-    """Decompress, refusing to allocate more than ``limit`` bytes.
+    """Decompress one gzip member, bounded, rejecting anything after it.
 
-    ``gzip.decompress`` has no bound, so a small verified index whose
-    compressed form expands enormously would still exhaust memory. The digest
-    check upstream of this does not help: a compression bomb can be signed.
+    ``gzip.decompress`` has no size bound, so a small verified index whose
+    compressed form expands enormously would exhaust memory; the digest check
+    upstream does not help, because a compression bomb can be signed.
+
+    ``GzipFile`` also concatenates members transparently, so a second member
+    appended to a legitimate one would be folded into the result without a
+    word. ``zlib``'s incremental decompressor reports both the end of the first
+    member and whatever follows it, so use that instead.
     """
-    import io
+    import zlib
+    decompressor = zlib.decompressobj(wbits=31)  # 31 = gzip wrapper
     out = bytearray()
     try:
-        with gzip.GzipFile(fileobj=io.BytesIO(blob)) as fh:
-            while True:
-                chunk = fh.read(1 << 20)
-                if not chunk:
-                    break
-                out += chunk
-                if len(out) > limit:
-                    raise TrustError(
-                        f"{what}: decompresses to more than {limit} bytes")
+        view = memoryview(blob)
+        step = 1 << 20
+        for offset in range(0, len(view), step):
+            out += decompressor.decompress(view[offset:offset + step],
+                                           limit - len(out) + 1)
+            if len(out) > limit:
+                raise TrustError(
+                    f"{what}: decompresses to more than {limit} bytes")
+            if decompressor.eof:
+                break
+        out += decompressor.flush()
+        if len(out) > limit:
+            raise TrustError(f"{what}: decompresses to more than {limit} bytes")
     except TrustError:
         raise
-    except (OSError, EOFError, gzip.BadGzipFile) as exc:
+    except (zlib.error, EOFError) as exc:
         raise TrustError(f"{what}: malformed gzip data ({exc})") from exc
+
+    if not decompressor.eof:
+        raise TrustError(f"{what}: truncated or incomplete gzip member")
+    if decompressor.unused_data:
+        raise TrustError(
+            f"{what}: {len(decompressor.unused_data)} bytes follow the gzip "
+            f"member; concatenated or trailing data is not accepted")
     return bytes(out)
 
 
@@ -887,6 +972,13 @@ def _decompress(name: str, blob: bytes) -> bytes:
         # though it were whole. This is the format the origin actually ships.
         if not decompressor.eof:
             raise TrustError(f"{name}: truncated or incomplete xz stream")
+        # unused_data holds anything after the first stream. A second stream,
+        # or trailing bytes, means the member is not what it appears to be and
+        # part of it would be silently ignored.
+        if decompressor.unused_data:
+            raise TrustError(
+                f"{name}: {len(decompressor.unused_data)} bytes follow the xz "
+                f"stream; concatenated or trailing data is not accepted")
         return out
     if name.endswith(".zst"):
         try:
@@ -923,6 +1015,11 @@ def _decompress(name: str, blob: bytes) -> bytes:
             decompressor.decompress(blob)
             if not decompressor.eof:
                 raise TrustError(f"{name}: truncated or incomplete zstd frame")
+            unused = getattr(decompressor, "unused_data", b"")
+            if unused:
+                raise TrustError(
+                    f"{name}: {len(unused)} bytes follow the zstd frame; "
+                    f"concatenated or trailing data is not accepted")
         except TrustError:
             raise
         except zstandard.ZstdError as exc:

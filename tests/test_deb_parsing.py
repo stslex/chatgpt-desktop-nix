@@ -291,3 +291,130 @@ class TestXzTruncation(unittest.TestCase):
         with self.assertRaises(T.TrustError) as ctx:
             T._decompress("control.tar.xz", blob[: len(blob) // 2])
         self.assertRegex(str(ctx.exception), "truncated|malformed")
+
+
+class TestArBounds(DebFixture):
+    def test_a_member_claiming_more_than_the_file_holds_is_refused(self):
+        path = self.deb()
+        with open(path, "rb") as fh:
+            blob = bytearray(fh.read())
+        # Inflate the first member's declared size well past the file.
+        offset = blob.index(b"`\n") - 12
+        blob[offset:offset + 10] = b"9999999999"
+        with open(path, "wb") as fh:
+            fh.write(blob)
+        with self.assertRaises(T.TrustError) as ctx:
+            T.read_deb_control(path)
+        self.assertRegex(str(ctx.exception), "runs past the end|truncated")
+
+    def test_bad_padding_is_refused(self):
+        # debian-binary is 4 bytes ("2.0\n"), so no padding; make an odd member.
+        members = [
+            ("debian-binary", b"2.0"),          # odd length -> needs padding
+            ("control.tar.xz", lzma.compress(self.control_tar())),
+            ("data.tar.xz", lzma.compress(b"")),
+        ]
+        path = self.deb(members=members)
+        with open(path, "rb") as fh:
+            blob = bytearray(fh.read())
+        # Corrupt the pad byte that follows the 3-byte debian-binary member.
+        index = blob.index(b"2.0") + 3
+        blob[index] = ord("X")
+        with open(path, "wb") as fh:
+            fh.write(blob)
+        with self.assertRaises(T.TrustError) as ctx:
+            T.read_deb_control(path)
+        self.assertIn("padded with", str(ctx.exception))
+
+
+class TestConcatenatedAndTrailingData(unittest.TestCase):
+    """Only one member's worth of data may be present.
+
+    GzipFile concatenates members transparently and lzma stops at the first
+    stream, so appended data would be either folded in or silently dropped.
+    """
+
+    def test_gzip_rejects_trailing_bytes(self):
+        import gzip
+        with self.assertRaises(T.TrustError) as ctx:
+            T._gunzip_bounded(gzip.compress(b"x") + b"JUNK",
+                              T.MAX_INDEX_BYTES, "x.gz")
+        self.assertIn("follow the gzip member", str(ctx.exception))
+
+    def test_gzip_rejects_a_second_member(self):
+        import gzip
+        with self.assertRaises(T.TrustError):
+            T._gunzip_bounded(gzip.compress(b"a") + gzip.compress(b"b"),
+                              T.MAX_INDEX_BYTES, "x.gz")
+
+    def test_gzip_rejects_a_truncated_member(self):
+        import gzip
+        blob = gzip.compress(b"payload" * 512)
+        with self.assertRaises(T.TrustError) as ctx:
+            T._gunzip_bounded(blob[: len(blob) // 2], T.MAX_INDEX_BYTES, "x.gz")
+        self.assertRegex(str(ctx.exception), "truncated|malformed")
+
+    def test_xz_rejects_trailing_bytes(self):
+        with self.assertRaises(T.TrustError) as ctx:
+            T._decompress("x.xz", lzma.compress(b"x") + b"JUNK")
+        self.assertIn("follow the xz stream", str(ctx.exception))
+
+    def test_xz_rejects_a_second_stream(self):
+        with self.assertRaises(T.TrustError):
+            T._decompress("x.xz", lzma.compress(b"a") + lzma.compress(b"b"))
+
+
+class TestControlFieldCaseFolding(unittest.TestCase):
+    def test_duplicate_fields_differing_only_in_case_are_refused(self):
+        for text in ("Package: a\npackage: b\n",
+                     "Package: a\nPACKAGE: b\n",
+                     "Version: 1\nvErSiOn: 2\n"):
+            with self.subTest(text=text), self.assertRaises(T.TrustError) as ctx:
+                T.parse_control_paragraph(text)
+            self.assertIn("case-insensitive", str(ctx.exception))
+
+    def test_distinct_fields_are_still_accepted(self):
+        fields = T.parse_control_paragraph("Package: a\nVersion: 1\n")
+        self.assertEqual(fields, {"Package": "a", "Version": "1"})
+
+
+class TestFilenameUrlParts(unittest.TestCase):
+    def test_query_fragment_and_userinfo_are_refused(self):
+        for bad in ("pool/main/c/chatgpt/a.deb?x=1",
+                    "pool/main/c/chatgpt/a.deb#frag",
+                    "pool/x@evil.example/y.deb"):
+            with self.subTest(bad=bad), self.assertRaises(T.TrustError):
+                T.sanitize_filename(bad)
+
+
+class TestDateNormalisation(unittest.TestCase):
+    HEADER = "Suite: stable\nCodename: stable\n"
+
+    def test_every_malformed_date_becomes_a_trust_error(self):
+        for bad in ("not a date",
+                    "Thu, 99 Xxx 2026 00:00:00 +0000",
+                    "Mon, 1 Jan 9999999 00:00:00 +0000",
+                    "Thu, 27 Aug 2026 00:00:00 +9999"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(T.TrustError):
+                    T.check_freshness(
+                        f"{self.HEADER}Date: {bad}\nMD5Sum:\n")
+
+    def test_a_date_without_a_timezone_is_read_as_utc(self):
+        # Otherwise the same metadata would age differently per machine.
+        stamp = T.release_date(f"{self.HEADER}Date: Thu, 27 Aug 2026 "
+                               f"00:04:34\nMD5Sum:\n")
+        self.assertEqual(stamp, 1787789074)
+
+
+class TestDistributionIdentityIsRequired(unittest.TestCase):
+    def test_a_release_without_suite_is_refused(self):
+        with self.assertRaises(T.TrustError) as ctx:
+            T.check_distribution_identity(
+                "Codename: stable\nMD5Sum:\n", ["amd64"])
+        self.assertIn("no Suite field", str(ctx.exception))
+
+    def test_a_release_without_codename_is_refused(self):
+        with self.assertRaises(T.TrustError) as ctx:
+            T.check_distribution_identity("Suite: stable\nMD5Sum:\n", ["amd64"])
+        self.assertIn("no Codename field", str(ctx.exception))

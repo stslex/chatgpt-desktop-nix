@@ -114,6 +114,17 @@ def fetch_to_file(url: str, path: str, expected_size: int) -> None:
                             f"{expected_size}"
                         )
                     out.write(chunk)
+            # A body that stops short is a truncated transfer, not a bad
+            # package. Letting it through to the digest check would classify a
+            # flaky CDN as a trust failure and open an issue demanding manual
+            # review of a file that was simply cut off in transit -- and this
+            # origin drops connections often enough for that to matter. Raise
+            # it here, where the retry budget still applies.
+            if total != expected_size:
+                raise NetworkError(
+                    f"{url}: transfer ended after {total} of the signed "
+                    f"{expected_size} bytes"
+                )
             return
         except (urllib.error.URLError, ssl.SSLError, TimeoutError, OSError,
                 NetworkError) as exc:
