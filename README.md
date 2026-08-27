@@ -301,7 +301,14 @@ each run it performs the whole trust chain from scratch:
 1. Fetch `InRelease` from the exact official origin.
 2. Verify it with `gpgv` against an isolated keyring holding **only** the
    committed key, and assert the reported signer fingerprint.
-3. Enforce `Valid-Until` when present (the origin does not publish it today).
+3. Enforce freshness. `Valid-Until` is honoured when present, but this origin
+   does not publish it, so the signed `Date` is used instead and metadata older
+   than 30 days is refused. A signature proves *who* published, never *when*:
+   without an age bound, someone controlling the CDN but not the key could
+   replay a genuine old snapshot indefinitely, and every hash would still match
+   while the client sat on a superseded release. The date is checked but not
+   recorded in `sources.json` — upstream re-signs daily, so storing it would
+   open a pull request every day that changed nothing.
 4. Read the signed SHA-256 and size for `Packages.gz`.
 5. Download that exact `Packages.gz` and verify both.
 6. Parse exactly one `Package: chatgpt` stanza per architecture.

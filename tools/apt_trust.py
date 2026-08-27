@@ -44,6 +44,12 @@ EXPECTED_KEYRING_SHA256 = (
     "23e2cfbdef6afe95505f9e95a2cb63585da7ffe9b06a51ec08a32407c847d596"
 )
 
+#: How stale signed metadata may be before it is refused. A valid signature
+#: does not establish freshness, so without a bound a CDN could replay a
+#: genuine old snapshot indefinitely. The origin publishes far more often than
+#: this, so the limit is generous while still making a freeze conspicuous.
+MAX_METADATA_AGE = 30 * 86400
+
 #: Upper bounds. These exist so a hostile or broken origin cannot make the
 #: updater allocate unbounded memory. They are far above real values.
 MAX_INDEX_BYTES = 8 * 1024 * 1024
@@ -276,25 +282,73 @@ def verify_inrelease(inrelease_bytes: bytes, keyring_path: str) -> str:
         return _read_file(payload).decode("utf-8")
 
 
-def check_valid_until(release_text: str, now: "int | None" = None) -> None:
-    """Reject stale metadata when the origin publishes ``Valid-Until``.
-
-    The current OpenAI origin does not emit this field. When it is absent there
-    is nothing to enforce; when it appears, it becomes binding immediately.
-    """
-    fields = parse_control_paragraph(release_text.split("\nMD5Sum:")[0])
-    raw = fields.get("Valid-Until")
-    if not raw:
-        return
+def _parse_rfc822_date(raw: str, field: str) -> int:
     import email.utils
     parsed = email.utils.parsedate_to_datetime(raw)
     if parsed is None:
-        raise TrustError(f"unparsable Valid-Until: {raw!r}")
-    expiry = int(parsed.timestamp())
+        raise TrustError(f"unparsable {field}: {raw!r}")
+    return int(parsed.timestamp())
+
+
+def release_date(release_text: str) -> "int | None":
+    """The signed ``Date`` of a Release payload, as a Unix timestamp."""
+    fields = parse_control_paragraph(release_text.split("\nMD5Sum:")[0])
+    raw = fields.get("Date")
+    return _parse_rfc822_date(raw, "Date") if raw else None
+
+
+def check_freshness(release_text: str, now: "int | None" = None) -> None:
+    """Reject metadata that is stale, however well it is signed.
+
+    A valid signature says the bytes came from OpenAI. It says nothing about
+    *when*. Someone who controls the CDN but not the private key can keep
+    replaying a genuine older snapshot forever: every hash matches, the
+    signature verifies, and the updater simply concludes it is already current
+    and exits successfully. The client would sit on a superseded release and
+    never notice.
+
+    APT's usual defence is ``Valid-Until``, but this origin does not publish
+    it. It does publish a signed ``Date``, which is enough: it is inside the
+    signed region, so replaying an old snapshot necessarily replays an old
+    ``Date`` too.
+    """
+    fields = parse_control_paragraph(release_text.split("\nMD5Sum:")[0])
     current = int(now if now is not None else _now())
-    if current > expiry:
+
+    raw_until = fields.get("Valid-Until")
+    if raw_until:
+        expiry = _parse_rfc822_date(raw_until, "Valid-Until")
+        if current > expiry:
+            raise TrustError(
+                f"signed repository metadata expired at {raw_until} — "
+                f"refusing to use it"
+            )
+
+    raw_date = fields.get("Date")
+    if not raw_date:
         raise TrustError(
-            f"signed repository metadata expired at {raw} — refusing to use it"
+            "signed Release has neither Valid-Until nor Date, so its age "
+            "cannot be established. Refusing rather than accepting metadata "
+            "that could be an arbitrarily old replay."
+        )
+
+    published = _parse_rfc822_date(raw_date, "Date")
+    age = current - published
+
+    if age > MAX_METADATA_AGE:
+        raise TrustError(
+            f"signed repository metadata is {age // 86400} days old (published "
+            f"{raw_date}), beyond the {MAX_METADATA_AGE // 86400}-day limit.\n"
+            f"Either upstream has genuinely stopped publishing, or something "
+            f"between here and the origin is replaying an old snapshot. Both "
+            f"need a human to look; neither is something to wave through."
+        )
+
+    # A little tolerance for clock skew between us and the publisher.
+    if age < -86400:
+        raise TrustError(
+            f"signed repository metadata is dated {raw_date}, which is in the "
+            f"future — refusing to trust it"
         )
 
 
@@ -391,6 +445,14 @@ def sanitize_filename(filename: str) -> str:
         raise TrustError("implausibly long Filename field")
     if "\\" in filename:
         raise TrustError(f"backslash in Filename: {filename!r}")
+    # Reject control characters and anything non-ASCII explicitly, rather than
+    # relying on some later layer to happen to raise on them.
+    for char in filename:
+        if ord(char) < 0x20 or ord(char) == 0x7F or ord(char) > 0x7E:
+            raise TrustError(
+                f"Filename contains a control or non-ASCII character "
+                f"(U+{ord(char):04X}): {filename!r}"
+            )
     if "://" in filename or urllib.parse.urlparse(filename).scheme:
         raise TrustError(f"Filename must be origin-relative, got URL: {filename!r}")
     if filename.startswith("/"):
@@ -525,11 +587,20 @@ def verify_deb_gpgorigin(deb_path: str, keyring_path: str) -> None:
     """
     assert_keyring_identity(keyring_path)
     members = _ar_members(deb_path, ordered=True)
-    signature = dict(members).get("_gpgorigin")
-    if signature is None:
+    signatures = [blob for name, blob in members if name == "_gpgorigin"]
+    if not signatures:
         raise TrustError(
             f"{deb_path}: expected a debsigs _gpgorigin member and found none"
         )
+    if len(signatures) > 1:
+        # Selecting one signature while excluding all of them from the signed
+        # payload would verify a different byte sequence than the archive
+        # actually contains.
+        raise TrustError(
+            f"{deb_path}: {len(signatures)} _gpgorigin members; a Debian "
+            f"archive has exactly one. Refusing to guess which is authoritative."
+        )
+    signature = signatures[0]
     gpgv = shutil.which("gpgv")
     if gpgv is None:
         raise TrustError("gpgv is required for debsigs verification")
@@ -616,11 +687,21 @@ def _ar_members(path: str, ordered: bool = False):
             if name == "//":
                 long_names = data
                 continue
-            if name.startswith("/") and name[1:].isdigit() and long_names:
+            if name.startswith("/") and name[1:].isdigit():
                 offset = int(name[1:])
+                if not long_names or offset >= len(long_names):
+                    raise TrustError(
+                        f"{path}: ar member references extended-filename "
+                        f"offset {offset}, outside the name table"
+                    )
                 end = long_names.find(b"/\n", offset)
                 if end == -1:
                     end = long_names.find(b"\n", offset)
+                if end == -1:
+                    raise TrustError(
+                        f"{path}: unterminated extended filename at offset "
+                        f"{offset}"
+                    )
                 name = long_names[offset:end].decode("ascii", "replace")
             name = name.rstrip("/")
             out.append((name, data))
@@ -677,6 +758,7 @@ Fetcher = Callable[[str], bytes]
 class VerifiedRelease:
     version: str
     records: dict[str, PackageRecord]
+    published: "int | None" = None
 
 
 def resolve_signed_release(
@@ -697,7 +779,8 @@ def resolve_signed_release(
     if len(inrelease) > MAX_INDEX_BYTES:
         raise TrustError("InRelease is implausibly large")
     release_text = verify_inrelease(inrelease, keyring_path)
-    check_valid_until(release_text, now=now)
+    check_freshness(release_text, now=now)
+    published = release_date(release_text)
     index = parse_release_sha256(release_text)
 
     records: dict[str, PackageRecord] = {}
@@ -714,4 +797,4 @@ def resolve_signed_release(
         records[arch] = parse_packages(text, arch)
 
     version = require_architecture_agreement(records)
-    return VerifiedRelease(version=version, records=records)
+    return VerifiedRelease(version=version, records=records, published=published)

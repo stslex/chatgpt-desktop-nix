@@ -145,6 +145,12 @@ def render_sources(release: T.VerifiedRelease) -> dict:
 
     Key order is fixed and the file is written with a trailing newline so
     repeated runs on an unchanged upstream produce a byte-identical file.
+
+    The signed publication date is deliberately NOT recorded here. It is
+    enforced at verification time (see apt_trust.check_freshness), but storing
+    it would rewrite this file every time upstream re-signs its index -- which
+    happens daily, whether or not the package changed -- and every rewrite
+    would open a pull request that updates nothing.
     """
     return {
         "_comment": (
@@ -218,6 +224,7 @@ def guard_downgrade(previous: dict, candidate: dict) -> None:
             f"upstream version {candidate['version']} is older than the pinned "
             f"{old_version} — refusing a downgrade (repository rollback?)"
         )
+
 
 
 def verify_debs(release: T.VerifiedRelease, workdir: str) -> None:

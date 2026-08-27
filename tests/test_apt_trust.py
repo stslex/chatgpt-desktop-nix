@@ -26,6 +26,14 @@ from unittest import mock
 import apt_trust as T
 
 
+_DEFAULT = object()
+
+
+def _now_ts() -> float:
+    import time
+    return time.time()
+
+
 def _have_gpg() -> bool:
     return shutil.which("gpg") is not None and shutil.which("gpgv") is not None
 
@@ -130,6 +138,7 @@ class SigningFixture(unittest.TestCase):
 
     def build_repo(self, *, stanzas: dict[str, str] | None = None,
                    valid_until: str | None = None,
+                   date: "str | None | object" = _DEFAULT,
                    corrupt_index_hash: bool = False,
                    corrupt_index_size: bool = False,
                    sign_with: str | None = None,
@@ -141,6 +150,13 @@ class SigningFixture(unittest.TestCase):
 
         blobs: dict[str, bytes] = {}
         lines = ["Codename: stable", "Suite: stable"]
+        if date is _DEFAULT:
+            # A fresh date, so tests that are not about freshness are unaffected
+            # by the age bound.
+            import email.utils
+            date = email.utils.formatdate(_now_ts(), usegmt=True)
+        if date:
+            lines.append(f"Date: {date}")
         if valid_until:
             lines.append(f"Valid-Until: {valid_until}")
         lines.append("SHA256:")
@@ -221,16 +237,62 @@ class TestSignatureFailures(SigningFixture):
 
 class TestExpiry(SigningFixture):
     def test_rejects_expired_metadata(self):
-        blobs = self.build_repo(valid_until="Tue, 01 Jan 2019 00:00:00 UTC")
+        blobs = self.build_repo(valid_until="Tue, 01 Jan 2019 00:00:00 UTC",
+                                date="Mon, 31 Dec 2018 00:00:00 UTC")
+        # An hour past the stated expiry, and still inside the age limit, so
+        # this asserts Valid-Until specifically rather than the age bound.
         with self.assertRaises(T.TrustError) as ctx:
-            self.resolve(blobs)
+            self.resolve(blobs, now=1546300800 + 3600)
         self.assertIn("expired", str(ctx.exception))
 
-    def test_absent_valid_until_is_accepted(self):
+    def test_absent_valid_until_is_accepted_when_the_date_is_fresh(self):
         # The live OpenAI origin does not publish Valid-Until today.
-        self.assertNotIn(b"Valid-Until",
-                         self.build_repo()[f"{T.APT_ORIGIN}/dists/stable/InRelease"])
-        self.assertEqual(self.resolve(self.build_repo()).version, "26.820.71523")
+        blobs = self.build_repo()
+        self.assertNotIn(
+            b"Valid-Until", blobs[f"{T.APT_ORIGIN}/dists/stable/InRelease"])
+        self.assertEqual(self.resolve(blobs).version, "26.820.71523")
+
+
+class TestFreshness(SigningFixture):
+    """A valid signature says who published, never when.
+
+    Someone who controls the CDN but not the key can otherwise replay a genuine
+    old snapshot forever: every hash matches, the signature verifies, and the
+    updater concludes it is already current.
+    """
+
+    def test_rejects_a_replayed_old_snapshot(self):
+        blobs = self.build_repo(date="Thu, 01 Jan 2026 00:00:00 UTC")
+        # Six months later, the CDN is still serving that same snapshot.
+        with self.assertRaises(T.TrustError) as ctx:
+            self.resolve(blobs, now=1782000000)
+        message = str(ctx.exception)
+        self.assertIn("days old", message)
+        self.assertIn("replaying an old snapshot", message)
+
+    def test_accepts_metadata_inside_the_age_limit(self):
+        blobs = self.build_repo(date="Thu, 27 Aug 2026 00:04:34 UTC")
+        release = self.resolve(blobs, now=1787789074 + 3 * 86400)
+        self.assertEqual(release.version, "26.820.71523")
+
+    def test_rejects_metadata_dated_in_the_future(self):
+        blobs = self.build_repo(date="Thu, 27 Aug 2026 00:04:34 UTC")
+        with self.assertRaises(T.TrustError) as ctx:
+            self.resolve(blobs, now=1787789074 - 30 * 86400)
+        self.assertIn("in the future", str(ctx.exception))
+
+    def test_rejects_metadata_with_no_date_at_all(self):
+        blobs = self.build_repo(date=None)
+        with self.assertRaises(T.TrustError) as ctx:
+            self.resolve(blobs)
+        self.assertIn("age cannot be established", str(ctx.exception))
+
+    def test_the_real_origin_publishes_a_date(self):
+        # The whole mechanism rests on this field being present upstream.
+        release_date = T.release_date(
+            "Codename: stable\nDate: Thu, 27 Aug 2026 00:04:34 +0000\n"
+            "Suite: stable\nMD5Sum:\n abc 1 x\n")
+        self.assertEqual(release_date, 1787789074)
 
 
 class TestIndexIntegrity(SigningFixture):

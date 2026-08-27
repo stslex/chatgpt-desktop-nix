@@ -23,6 +23,7 @@ call that a future maintainer should feel free to overturn with evidence.
 | `InRelease` signer | `3BFA0E4AE8B8CC16A2D9BA684A3B4A566C4660E4` |
 | Key type | RSA 4096, created 2026-08-05, UID `Codex Linux Repository` |
 | `Valid-Until` | **absent** — the origin does not publish it |
+| `Date` | present and signed (`Thu, 27 Aug 2026 00:04:34 +0000`) |
 | `Release.gpg` | present (detached signature alongside `InRelease`) |
 | `_gpgorigin` | present on both `.deb` files, signed by the same key |
 
