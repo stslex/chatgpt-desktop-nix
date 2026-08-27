@@ -89,14 +89,53 @@ jobs:
           fi
           sanitized="$(printf '%s' "$version" | tr -c 'A-Za-z0-9._-' '-')"
           branch="automation/chatgpt-$sanitized"
-          if git fetch origin "$branch" 2>/dev/null \
-             && git show "FETCH_HEAD:sources.json" > observed-sources.json 2>/dev/null; then
-            echo "recovered the candidate already recorded on $branch"
-            echo "path=observed-sources.json" >> "$GITHUB_OUTPUT"
-          else
-            echo "no existing automation branch for $version"
-            echo "path=" >> "$GITHUB_OUTPUT"
+
+          # "The branch does not exist" and "I could not find out" must not be
+          # the same answer. Treating a failed fetch as absence skips
+          # --observed, which skips guard_observed_candidate entirely -- the
+          # only check standing between a same-version republish and a
+          # force-push over the candidate already recorded for it. A DNS blip
+          # would silently reopen exactly the gap that guard exists to close.
+          #
+          # git ls-remote --exit-code distinguishes them: 2 means "no such
+          # ref", anything else non-zero means the question was not answered.
+          state=""
+          for attempt in 1 2 3 4 5; do
+            if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+              state=exists; break
+            fi
+            rc=$?
+            if [ "$rc" -eq 2 ]; then state=absent; break; fi
+            echo "  ls-remote failed (exit $rc); retry $attempt/5" >&2
+            sleep $(( attempt * 5 ))
+          done
+
+          if [ -z "$state" ]; then
+            echo "could not determine whether $branch exists." >&2
+            echo "Proceeding would skip the same-version drift guard, so this" >&2
+            echo "run stops here instead. The next scheduled run will retry." >&2
+            exit 30
           fi
+
+          if [ "$state" = "absent" ]; then
+            echo "no automation branch exists for $version"
+            echo "path=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # The branch exists, so its sources.json must be readable. A failure
+          # here is a failure, not an absence.
+          if ! git fetch --depth=1 origin "$branch"; then
+            echo "could not fetch $branch, which ls-remote says exists" >&2
+            exit 30
+          fi
+          if ! git show "FETCH_HEAD:sources.json" > observed-sources.json; then
+            echo "$branch exists but carries no readable sources.json." >&2
+            echo "That is not a shape this automation creates; review it." >&2
+            exit 1
+          fi
+          echo "recovered the candidate already recorded on $branch"
+          echo "path=observed-sources.json" >> "$GITHUB_OUTPUT"
 
       - name: Resolve and verify the current upstream release
         id: run
