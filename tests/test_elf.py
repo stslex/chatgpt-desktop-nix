@@ -180,6 +180,33 @@ class TestClassifier(ElfTempMixin):
         self.assertEqual(result.kind, "android-prebuild")
         self.assertEqual(result.action, C.Action.LEAVE_ALONE)
 
+    def test_musl_executable_is_detected_from_its_interpreter(self):
+        """A musl executable names musl in PT_INTERP, not in DT_NEEDED.
+
+        Checking only DT_NEEDED would classify it as a host program and give it
+        a glibc interpreter.
+        """
+        path = self.write(build_elf(
+            interp=b"/lib/ld-musl-x86_64.so.1\0", needed=[b"libc.so"]))
+        result = self.classify(path)
+        self.assertEqual(result.kind, "musl-prebuild")
+        self.assertEqual(result.action, C.Action.LEAVE_ALONE)
+
+    def test_a_host_binary_linking_libcxx_shared_is_not_called_android(self):
+        """Bionic sonames alone are not proof; glibc linkage outweighs them."""
+        path = self.write(build_elf(
+            interp=None,
+            needed=[b"libc++_shared.so", b"libc.so.6", b"libpthread.so.0"]))
+        result = self.classify(path)
+        self.assertEqual(result.kind, "host-glibc-library")
+
+    def test_a_real_android_prebuild_is_still_detected_by_sonames(self):
+        path = self.write(build_elf(
+            machine=0xB7, interp=None,
+            needed=[b"liblog.so", b"libc++_shared.so", b"libc.so"]))
+        self.assertEqual(
+            self.classify(path, system="aarch64-linux").kind, "android-prebuild")
+
     def test_foreign_architecture_is_left_alone(self):
         path = self.write(build_elf(machine=0xB7, interp=None,
                                     needed=[b"libc.so.6"]))
@@ -343,6 +370,47 @@ class TestRelocation(ElfTempMixin):
         # The .interp section's own range must be claimed.
         self.assertTrue(any(s == 736 for s, _ in ranges))
 
+    def test_refuses_a_binary_with_no_section_headers(self):
+        """Without section headers nothing can be proven unreferenced.
+
+        A stripped binary would otherwise look almost entirely free, which is
+        the same corruption the section-header check exists to prevent.
+        """
+        long_interp = b"/nix/store/" + b"e" * 32 + b"-glibc/lib/ld-linux-x86-64.so.2\0"
+        data = bytearray(build_elf(
+            interp=long_interp, interp_offset=6000, total_size=16384))
+        struct.pack_into("<Q", data, 40, 0)   # e_shoff = 0
+        struct.pack_into("<HH", data, 58, 64, 0)  # e_shnum = 0
+        path = self.write(bytes(data))
+
+        with self.assertRaises(R.RelocationError) as ctx:
+            R.relocate(path, verbose=False)
+        self.assertIn("no section headers", str(ctx.exception))
+
+    def test_a_failed_relocation_leaves_no_partial_file(self):
+        """Validation happens on a staged copy, never on the original.
+
+        The caller treats a relocation failure as 'not relocated' and carries
+        on, so a half-written original would be shipped rather than caught.
+        """
+        long_interp = b"/nix/store/" + b"f" * 32 + b"-glibc/lib/ld-linux-x86-64.so.2\0"
+        path = self.write(build_elf(
+            interp=long_interp, interp_offset=6000, total_size=16384,
+            filler=0x00, extra_section_covering=(300, 1748)))
+        with open(path, "rb") as fh:
+            before = fh.read()
+
+        with self.assertRaises(R.RelocationError):
+            R.relocate(path, verbose=False)
+
+        with open(path, "rb") as fh:
+            self.assertEqual(fh.read(), before)
+        directory = os.path.dirname(path)
+        self.assertEqual(
+            [f for f in os.listdir(directory) if f.endswith(".interp-tmp")], [],
+            "a staging file was left behind",
+        )
+
     def test_assert_within_window_rejects_an_out_of_window_binary(self):
         path = self.write(build_elf(interp_offset=6000, total_size=16384))
         elf = R.Elf64(path)
@@ -371,6 +439,12 @@ class TestRunpathMerging(unittest.TestCase):
     def test_non_origin_existing_entries_are_kept_last(self):
         merged = self.merge("$ORIGIN/a:/opt/legacy", "/nix/store/x")
         self.assertEqual(merged, "$ORIGIN/a:/nix/store/x:/opt/legacy")
+
+    def test_the_braced_origin_form_is_also_kept_first(self):
+        # "${ORIGIN}/../lib" is as valid as "$ORIGIN/../lib"; demoting it would
+        # let a store library shadow a bundled one.
+        merged = self.merge("${ORIGIN}/../lib:/opt/legacy", "/nix/store/x")
+        self.assertEqual(merged, "${ORIGIN}/../lib:/nix/store/x:/opt/legacy")
 
 
 if __name__ == "__main__":

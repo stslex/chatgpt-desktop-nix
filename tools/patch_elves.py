@@ -56,9 +56,15 @@ def merged_runpath(existing: str, additions: str) -> str:
             if entry and entry not in seen:
                 seen.append(entry)
 
-    add(":".join(e for e in existing.split(":") if "$ORIGIN" in e))
+    # Both "$ORIGIN/../lib" and "${ORIGIN}/../lib" are valid and mean the same
+    # thing; matching only the bare form would demote a braced entry behind our
+    # store paths and let a store library shadow a bundled one.
+    def is_origin(entry: str) -> bool:
+        return "$ORIGIN" in entry or "${ORIGIN}" in entry
+
+    add(":".join(e for e in existing.split(":") if is_origin(e)))
     add(additions)
-    add(":".join(e for e in existing.split(":") if "$ORIGIN" not in e))
+    add(":".join(e for e in existing.split(":") if not is_origin(e)))
     return ":".join(seen)
 
 

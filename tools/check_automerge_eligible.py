@@ -53,6 +53,23 @@ def main() -> int:
     pr = gh_api(f"repos/{args.repo}/pulls/{args.pr}")
     files = gh_api(f"repos/{args.repo}/pulls/{args.pr}/files")
 
+    # The PR object and its file list are two separate reads. A push landing
+    # between them would leave us checking an old head against a new diff, so
+    # read the PR again afterwards and require the head to be unmoved. Any
+    # movement means we cannot describe a single consistent state, and the
+    # honest response is to decline rather than reason about which half is
+    # current.
+    pr_after = gh_api(f"repos/{args.repo}/pulls/{args.pr}")
+    if pr_after.get("head", {}).get("sha") != pr.get("head", {}).get("sha"):
+        print(
+            f"{args.repo}#{args.pr}: the head moved while it was being "
+            f"inspected ({pr.get('head', {}).get('sha')} -> "
+            f"{pr_after.get('head', {}).get('sha')}); refusing to enable "
+            f"auto-merge on a state that was never observed whole.",
+            file=sys.stderr,
+        )
+        return 1
+
     problems: list[str] = []
     checks: list[tuple[str, bool, str]] = []
 

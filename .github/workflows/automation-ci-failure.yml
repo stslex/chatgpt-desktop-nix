@@ -26,8 +26,14 @@ jobs:
   report:
     name: File or update the version's issue
     # Only automation branches, and only failures.
+    #
+    # The head repository must be this one. `workflow_run` also fires for pull
+    # requests from forks, and a fork can name its branch anything it likes --
+    # including something that looks like automation. Without this condition a
+    # fork could make a trusted bot file issues containing text it chose.
     if: >
       github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
       startsWith(github.event.workflow_run.head_branch, 'automation/chatgpt-')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -52,8 +58,14 @@ jobs:
         run: |
           set -eu
 
-          # automation/chatgpt-<version>
+          # automation/chatgpt-<version>. The branch name reaches an issue
+          # title, so constrain it to the character set the updater's own
+          # sanitiser produces rather than trusting it.
           version="${BRANCH#automation/chatgpt-}"
+          if ! printf '%s' "$version" | grep -qE '^[A-Za-z0-9._-]{1,64}$'; then
+            echo "refusing to report on an unexpected branch name: $BRANCH" >&2
+            exit 1
+          fi
 
           # Work out which gate failed, so the issue says whether this is
           # packaging drift or a runtime regression rather than just "CI red".

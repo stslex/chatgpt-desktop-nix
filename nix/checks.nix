@@ -418,8 +418,10 @@ in
     export XDG_CACHE_HOME=$PWD/home/.cache
     mkdir -p "$XDG_CACHE_HOME"
 
-    # Extract just the publish function so we can call it in isolation.
-    sed -n '/^publish_plugin_cache()/,/^}/p' ${launcher} > lib.sh
+    # Extract the cache functions so we can call them in isolation.
+    for fn in publish_plugin_cache collect_unused_caches inuse_lock degrade; do
+      sed -n "/^$fn()/,/^}/p" ${launcher} >> lib.sh
+    done
     cat > drive.sh <<'SH'
     set -uo pipefail
     warn() { printf 'warn: %s\n' "$1" >&2; }
@@ -463,10 +465,49 @@ in
     test -e "$(cat distinct)/.complete"
     echo "  6 concurrent launches produced exactly one published cache"
 
-    echo "--- stale keys are collected ---"
+    echo "--- an unused previous version's cache is collected ---"
     bash drive.sh "$res" "$root" key3 > /dev/null
     test ! -e "$root/key2"
     echo "  previous version's cache removed"
+
+    echo "--- a cache still IN USE by another instance is NOT collected ---"
+    # This is the important one. The build lock is per-key, so it says nothing
+    # about a different key -- and a different key is exactly what an older
+    # running instance holds. Simulate that instance by taking the shared
+    # in-use lock, then publish a new key and confirm the old cache survives.
+    bash drive.sh "$res" "$root" keyA > /dev/null
+    test -d "$root/keyA"
+
+    # Hold the lock the same way the launcher does: a fixed descriptor
+    # inherited across exec. Using `flock <file> <command>` here would be
+    # wrong — it forks, so killing it leaves the child holding the lock and the
+    # release half of this test could never pass.
+    cat > holder.sh <<'SH'
+    exec 9>>"$1"
+    flock --shared --nonblock 9 || exit 1
+    exec sleep 300
+    SH
+
+    bash holder.sh "$root/.keyA.inuse.lock" &
+    holder=$!
+    sleep 1
+    bash drive.sh "$res" "$root" keyB > /dev/null
+    if [ ! -d "$root/keyA" ]; then
+      echo "keyA was deleted while another instance still held it" >&2
+      kill $holder 2>/dev/null || true
+      exit 1
+    fi
+    echo "  in-use cache survived a concurrent publish of another version"
+
+    echo "--- once released, it is collected ---"
+    kill $holder 2>/dev/null || true
+    wait $holder 2>/dev/null || true
+    # The launcher also skips entries touched in the last 12 hours as a second
+    # line of defence, so age this one past that window before collecting.
+    touch -d '2 days ago' "$root/.keyA.inuse.lock"
+    bash drive.sh "$res" "$root" keyC > /dev/null
+    test ! -e "$root/keyA"
+    echo "  released cache removed on the next publish"
 
     echo "--- abandoned staging dirs are swept ---"
     mkdir -p "$root/.staging-orphan.XXX"

@@ -92,6 +92,17 @@ then rebuild and log in again."
 # plugins subtree. It is keyed by package version plus a hash of the upstream
 # resources, so a new build gets a new cache and an unchanged build reuses one.
 
+degrade() {
+    # Falling back to the read-only store copy is a degradation, not a repair:
+    # the app gets exactly what it would have had without this cache, so any
+    # bundled-plugin feature that needs to write will still misbehave. Say so
+    # rather than failing silently, and keep starting — a working chat window
+    # is better than no application at all.
+    warn "$1"
+    warn "using the read-only store resources; bundled-plugin features that need to write may not work"
+    printf '%s' "$2"
+}
+
 publish_plugin_cache() {
     local resources="$1" cache_root="$2" key="$3"
     local final="$cache_root/$key"
@@ -103,23 +114,21 @@ publish_plugin_cache() {
     fi
 
     mkdir -p "$cache_root" || {
-        warn "cannot create $cache_root; falling back to the read-only store copy"
-        printf '%s' "$resources"
+        degrade "cannot create $cache_root" "$resources"
         return 0
     }
 
     # Serialise concurrent launches. Without this, two instances starting
     # together would each stage a full copy and race on the final rename.
-    local lock="$cache_root/.$key.lock"
+    local lock="$cache_root/.$key.build.lock"
     exec {lock_fd}>"$lock" || {
-        warn "cannot open $lock; falling back to the read-only store copy"
-        printf '%s' "$resources"
+        degrade "cannot open $lock" "$resources"
         return 0
     }
 
     if ! flock --exclusive --timeout 120 "$lock_fd"; then
-        warn "timed out waiting for another instance to build the plugin cache"
-        printf '%s' "$resources"
+        exec {lock_fd}>&-
+        degrade "timed out waiting for another instance to build the plugin cache" "$resources"
         return 0
     fi
 
@@ -140,8 +149,7 @@ publish_plugin_cache() {
     local staging
     staging="$(mktemp -d "$cache_root/.staging-$key.XXXXXX")" || {
         exec {lock_fd}>&-
-        warn "cannot create a staging directory; using the read-only store copy"
-        printf '%s' "$resources"
+        degrade "cannot create a staging directory" "$resources"
         return 0
     }
 
@@ -166,16 +174,21 @@ publish_plugin_cache() {
     if (( ! ok )); then
         rm -rf "$staging"
         exec {lock_fd}>&-
-        warn "could not stage the plugin cache; using the read-only store copy"
-        printf '%s' "$resources"
+        degrade "could not stage the plugin cache" "$resources"
         return 0
     fi
 
     # Flush before publishing, so a crash or power loss cannot leave a
-    # directory that is marked complete but contains truncated files.
-    sync "$staging" 2>/dev/null || true
-    : > "$staging/.complete"
-    sync "$staging/.complete" 2>/dev/null || true
+    # directory that is marked complete but contains truncated files. If the
+    # flush or the marker cannot be written we must NOT publish: an entry
+    # carrying .complete is treated as trustworthy forever after.
+    if ! sync "$staging" || ! : > "$staging/.complete" \
+            || ! sync "$staging/.complete"; then
+        rm -rf "$staging"
+        exec {lock_fd}>&-
+        degrade "could not flush the staged plugin cache to disk" "$resources"
+        return 0
+    fi
 
     if ! mv -T "$staging" "$final" 2>/dev/null; then
         # Lost a race against another publisher, or the rename failed. If a
@@ -183,30 +196,68 @@ publish_plugin_cache() {
         rm -rf "$staging"
         if [[ ! -e "$stamp" ]]; then
             exec {lock_fd}>&-
-            warn "could not publish the plugin cache; using the read-only store copy"
-            printf '%s' "$resources"
+            degrade "could not publish the plugin cache" "$resources"
             return 0
         fi
     fi
 
-    # Drop caches for versions we no longer run. Only entries that are complete
-    # and not the current key are removed, and only under our own lock.
-    local old
+    collect_unused_caches "$cache_root" "$key"
+
+    exec {lock_fd}>&-
+    printf '%s' "$final"
+}
+
+# Remove caches for versions nothing is running any more.
+#
+# The build lock is per-key, so it says nothing about entries under a different
+# key — and a different key is exactly what an older instance is using. Deleting
+# by "not the current key" would pull the resources out from under a running
+# application. Instead every launch holds a *shared* lock on its own entry for
+# its whole lifetime, so an entry is provably unused only when an *exclusive*
+# non-blocking lock on it succeeds.
+collect_unused_caches() {
+    local cache_root="$1" key="$2" old base lock
+
     for old in "$cache_root"/*; do
         [[ -d "$old" ]] || continue
-        [[ "$(basename "$old")" == "$key" ]] && continue
+        base="$(basename "$old")"
+        [[ "$base" == "$key" ]] && continue
+        lock="$(inuse_lock "$cache_root" "$base")"
+
+        # Skip anything whose in-use lock was touched recently. The lock itself
+        # is the real signal, but this is cheap insurance: if the descriptor
+        # were ever lost — a child that closes inherited descriptors, say — a
+        # cache in active use would still not be collected out from under a
+        # running application on the same day.
+        if [[ -e "$lock" ]]; then
+            local mtime now
+            mtime="$(stat -c %Y "$lock" 2>/dev/null || echo 0)"
+            now="$(date +%s)"
+            if (( now - mtime < 43200 )); then
+                continue
+            fi
+        fi
+
+        # If anyone still holds the in-use lock, skip this entry entirely.
+        if ! flock --exclusive --nonblock "$lock" --command true 2>/dev/null; then
+            continue
+        fi
         chmod -R u+w "$old" 2>/dev/null || true
         rm -rf "$old" 2>/dev/null || true
+        rm -f "$lock" "$cache_root/.$base.build.lock" 2>/dev/null || true
     done
+
     # Abandoned staging directories from a SIGKILLed launch: an EXIT trap never
-    # runs for those, so sweep them here instead.
+    # runs for those, so sweep them here instead. These are only ever created
+    # while the build lock is held, which we hold now, so none can be live.
     for old in "$cache_root"/.staging-*; do
         [[ -d "$old" ]] || continue
         rm -rf "$old" 2>/dev/null || true
     done
+}
 
-    exec {lock_fd}>&-
-    printf '%s' "$final"
+inuse_lock() {
+    printf '%s/.%s.inuse.lock' "$1" "$2"
 }
 
 # ---------------------------------------------------------------------------
@@ -215,10 +266,22 @@ publish_plugin_cache() {
 
 check_user_namespaces
 
-cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
+# Under `set -u` a bare $HOME would abort the launcher outright when HOME is
+# unset — which happens in systemd units, some containers and `env -i`. Fall
+# back rather than refusing to start.
+if [[ -n "${XDG_CACHE_HOME:-}" ]]; then
+    cache_home="$XDG_CACHE_HOME"
+elif [[ -n "${HOME:-}" ]]; then
+    cache_home="$HOME/.cache"
+else
+    cache_home="${TMPDIR:-/tmp}/chatgpt-desktop-nix-$(id -u)"
+    warn "neither XDG_CACHE_HOME nor HOME is set; caching under $cache_home"
+fi
+
+cache_root="$cache_home/chatgpt-desktop-nix/resources"
 resources_path="$(publish_plugin_cache \
     "@out@/lib/chatgpt/resources" \
-    "$cache_home/chatgpt-desktop-nix/resources" \
+    "$cache_root" \
     "@resourceKey@")"
 
 export CODEX_ELECTRON_BUNDLED_PLUGINS_RESOURCES_PATH="$resources_path"
@@ -263,17 +326,47 @@ case "${NIXOS_OZONE_WL:-}" in
 esac
 
 # Optional user-controlled flags, one per line, '#' for comments.
-flags_file="${XDG_CONFIG_HOME:-$HOME/.config}/chatgpt-flags.conf"
-if [[ -r "$flags_file" ]]; then
-    while IFS= read -r line; do
+#
+# A line is split on whitespace, so both `--flag=value` and `--flag value`
+# behave the way someone writing a command line would expect. Quoting is not
+# interpreted: a value containing spaces must use the `--flag=value` form.
+if [[ -n "${XDG_CONFIG_HOME:-}" ]]; then
+    flags_file="$XDG_CONFIG_HOME/chatgpt-flags.conf"
+elif [[ -n "${HOME:-}" ]]; then
+    flags_file="$HOME/.config/chatgpt-flags.conf"
+else
+    flags_file=""
+fi
+
+if [[ -n "$flags_file" && -r "$flags_file" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
         line="${line%%#*}"
-        line="${line#"${line%%[![:space:]]*}"}"
-        line="${line%"${line##*[![:space:]]}"}"
-        [[ -n "$line" ]] && electron_args+=("$line")
+        read -ra fields <<< "$line"
+        (( ${#fields[@]} )) && electron_args+=("${fields[@]}")
     done < "$flags_file"
 fi
 
 # The user's own arguments come last so they win over anything above, and are
 # passed through verbatim, including an explicit ozone platform override for a
 # native-Wayland session.
+#
+# When we published a writable cache, hold a shared lock on it for the whole
+# life of the application, so another launch's garbage collection can tell the
+# entry is still in use.
+#
+# The descriptor is opened with a fixed number and inherited across the exec
+# below, which keeps the lock held for exactly as long as the app runs and adds
+# no process to the tree. Note that `flock <lock> <command>` would NOT do this:
+# it forks rather than execs, leaving an extra process between the desktop
+# entry and Electron.
+if [[ "$resources_path" != "@out@/lib/chatgpt/resources" ]]; then
+    lock_path="$(inuse_lock "$cache_root" "@resourceKey@")"
+    if : >> "$lock_path" 2>/dev/null; then
+        touch "$lock_path" 2>/dev/null || true
+        if exec 9>>"$lock_path" 2>/dev/null; then
+            flock --shared --nonblock 9 2>/dev/null || true
+        fi
+    fi
+fi
+
 exec "@out@/lib/chatgpt/ChatGPT" "${electron_args[@]}" "$@"

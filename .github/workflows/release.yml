@@ -67,22 +67,30 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
 
+          # A Debian version may legitimately contain ':' (epoch) and '~'
+          # (pre-release), neither of which is valid in a git ref. Left as-is,
+          # `git rev-parse --verify` on such a ref returns 1 for "invalid
+          # refname" exactly as it does for "does not exist", so the loop below
+          # would wrongly conclude the tag is free and then fail to create it.
+          slug="$(printf '%s' "$version" | tr ':~+' '...')"
+          echo "slug=$slug" >> "$GITHUB_OUTPUT"
+
           # Immutable tag: chatgpt-<upstream-version>-nix<N>. N increments for
           # packaging-only revisions of the same upstream version.
           n=1
-          while git rev-parse -q --verify "refs/tags/chatgpt-$version-nix$n" >/dev/null; do
-            existing="$(git rev-parse "refs/tags/chatgpt-$version-nix$n^{commit}")"
+          while git rev-parse -q --verify "refs/tags/chatgpt-$slug-nix$n" >/dev/null; do
+            existing="$(git rev-parse "refs/tags/chatgpt-$slug-nix$n^{commit}")"
             if [ "$existing" = "${{ github.sha }}" ]; then
-              echo "tag chatgpt-$version-nix$n already points at this commit"
-              echo "tag=chatgpt-$version-nix$n" >> "$GITHUB_OUTPUT"
+              echo "tag chatgpt-$slug-nix$n already points at this commit"
+              echo "tag=chatgpt-$slug-nix$n" >> "$GITHUB_OUTPUT"
               echo "exists=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             n=$((n + 1))
           done
-          echo "tag=chatgpt-$version-nix$n" >> "$GITHUB_OUTPUT"
+          echo "tag=chatgpt-$slug-nix$n" >> "$GITHUB_OUTPUT"
           echo "exists=false" >> "$GITHUB_OUTPUT"
-          echo "will tag as chatgpt-$version-nix$n"
+          echo "will tag as chatgpt-$slug-nix$n"
 
       - name: Re-verify the signed sources independently
         run: python3 tools/verify_sources.py --strict

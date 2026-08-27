@@ -254,9 +254,8 @@ jobs:
       - name: Require every gate to have succeeded
         run: |
           set -eu
-          # changed-files-policy is skipped outside pull requests; every other
-          # job must have succeeded. A skipped or cancelled required job counts
-          # as a failure so nothing merges on a partially-run pipeline.
+          # Every job must have succeeded. A skipped or cancelled required job
+          # counts as a failure so nothing merges on a partially-run pipeline.
           failed=0
           check() {
             name="$1"; result="$2"; allow_skip="${3:-no}"
@@ -269,8 +268,26 @@ jobs:
               failed=1
             fi
           }
+
+          # changed-files-policy is the only thing constraining what an
+          # automated update may touch, so it may only be skipped for events
+          # that cannot merge anything: a push to an already-protected branch,
+          # or a manual dispatch. In particular a merge_group run must NOT be
+          # allowed to pass without it — that would let a queued automation PR
+          # bypass the file-scope gate entirely.
+          policy_skip=no
+          case '${{ github.event_name }}' in
+            push|workflow_dispatch) policy_skip=yes ;;
+            merge_group)
+              echo "merge_group runs require the changed-file policy, but the" >&2
+              echo "job is currently gated on pull_request only. Extend that" >&2
+              echo "job before enabling a merge queue." >&2
+              failed=1
+              ;;
+          esac
+
           check verify-signed-sources '${{ needs.verify-signed-sources.result }}'
-          check changed-files-policy  '${{ needs.changed-files-policy.result }}' yes
+          check changed-files-policy  '${{ needs.changed-files-policy.result }}' "$policy_skip"
           check unit-tests            '${{ needs.unit-tests.result }}'
           check build                 '${{ needs.build.result }}'
           check vm-smoke              '${{ needs.vm-smoke.result }}'

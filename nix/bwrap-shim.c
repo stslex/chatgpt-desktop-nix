@@ -95,14 +95,20 @@ int main(int argc, char **argv) {
         return 127;
     }
 
-    /* Find bubblewrap's own "--" terminator. */
-    int split = argc;
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--") == 0) {
-            split = i;
-            break;
-        }
-    }
+    /* Insert immediately after argv[0], before any caller-supplied option.
+     *
+     * The obvious alternative -- scan for the first bare "--" and insert
+     * before it -- is wrong, because "--" is not necessarily the separator.
+     * Several bwrap options take an arbitrary value, so `bwrap --setenv FOO --
+     * -- /bin/true` has "--" as the *value* of --setenv, and splicing there
+     * would corrupt the command. Correctly identifying the separator would
+     * mean reimplementing bwrap's option table and keeping it in sync.
+     *
+     * Inserting at the front needs no parsing and is unambiguous. Our
+     * arguments are ordinary bwrap options, and because they come first, a
+     * caller that deliberately binds over the same path later still wins --
+     * bwrap applies binds in order. */
+    const int split = 1;
 
     /* The arguments we splice in, in order. */
     char *const inserted[] = {

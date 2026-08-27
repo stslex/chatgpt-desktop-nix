@@ -49,7 +49,9 @@ not patch any JavaScript.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
+import shutil
 import struct
 import sys
 
@@ -134,7 +136,12 @@ class Elf64:
         strtab_size = struct.unpack_from("<Q", self.data, strtab_base + 32)[0]
         name_off = struct.unpack_from("<I", self.data, self._sh_base(index))[0]
         start = strtab_off + name_off
-        end = self.data.find(b"\0", start, strtab_off + strtab_size)
+        limit = strtab_off + strtab_size
+        end = self.data.find(b"\0", start, limit)
+        if end == -1:
+            # An unterminated name means a malformed table; slicing with -1
+            # would silently drop the last byte instead of saying so.
+            end = limit
         return self.data[start:end].decode("utf-8", "replace")
 
     def find_section(self, wanted: str) -> int | None:
@@ -190,22 +197,39 @@ def occupied_ranges(elf: Elf64) -> list[tuple[int, int]]:
     Covers the ELF header, the program-header table, the section-header table
     and the file-backed contents of every section. Anything outside all of
     these is genuinely unreferenced and safe to reuse.
+
+    Raises if the file has no section headers. Without them this function can
+    only account for the two header tables, so almost the entire file would
+    look unclaimed and the caller would happily write into live data. Returning
+    a permissive answer there would silently reintroduce exactly the corruption
+    the section-header check exists to prevent.
     """
+    if not elf.e_shoff or not elf.e_shnum:
+        raise RelocationError(
+            f"{elf.path}: no section headers, so no range can be proven "
+            f"unreferenced. Refusing to relocate the interpreter rather than "
+            f"guessing which bytes are free."
+        )
+
     ranges: list[tuple[int, int]] = [(0, 64)]  # ELF header
     ranges.append((elf.e_phoff, elf.phdr_table_end))
-    if elf.e_shoff:
-        ranges.append(
-            (elf.e_shoff, elf.e_shoff + elf.e_shentsize * elf.e_shnum)
-        )
-        for i in range(elf.e_shnum):
-            base = elf._sh_base(i)
-            sh_type = struct.unpack_from("<I", elf.data, base + 4)[0]
-            sh_offset = struct.unpack_from("<Q", elf.data, base + 24)[0]
-            sh_size = struct.unpack_from("<Q", elf.data, base + 32)[0]
-            # SHT_NOBITS (.bss) occupies no file space.
-            if sh_type == SHT_NOBITS or sh_size == 0:
-                continue
-            ranges.append((sh_offset, sh_offset + sh_size))
+    ranges.append((elf.e_shoff, elf.e_shoff + elf.e_shentsize * elf.e_shnum))
+
+    for i in range(elf.e_shnum):
+        base = elf._sh_base(i)
+        sh_type = struct.unpack_from("<I", elf.data, base + 4)[0]
+        sh_offset = struct.unpack_from("<Q", elf.data, base + 24)[0]
+        sh_size = struct.unpack_from("<Q", elf.data, base + 32)[0]
+        # SHT_NOBITS (.bss) occupies no file space.
+        if sh_type == SHT_NOBITS or sh_size == 0:
+            continue
+        ranges.append((sh_offset, sh_offset + sh_size))
+
+    # Note that PT_LOAD ranges are deliberately NOT added here. The gap we are
+    # looking for is by definition inside a PT_LOAD -- that is what makes it
+    # mapped and addressable -- so treating whole segments as occupied would
+    # rule out every candidate. Within a mapped segment it is the section table
+    # that says which bytes are live, and patchelf keeps it accurate.
     return sorted(ranges)
 
 
@@ -238,9 +262,15 @@ def find_free_range(elf: Elf64, need: int, window: int) -> int:
                       default=offset + 1)
             offset = (max(nxt, offset + 1) + 7) & ~7
             continue
-        if all(byte in FILLER_BYTES for byte in elf.data[offset:end]):
+        chunk = elf.data[offset:end]
+        if all(byte in FILLER_BYTES for byte in chunk):
             return offset
-        offset = (offset + 8) & ~7
+        # Restart just past the last non-filler byte in this window rather than
+        # stepping a fixed 8 bytes, which could step over an otherwise usable
+        # run that begins in the middle of the rejected chunk.
+        last_bad = max(i for i, byte in enumerate(chunk)
+                       if byte not in FILLER_BYTES)
+        offset = (offset + last_bad + 1 + 7) & ~7
 
     raise RelocationError(
         f"{elf.path}: could not find {need} unreferenced bytes between "
@@ -315,19 +345,35 @@ def relocate(path: str, *, window: int = DETECT_LIBC_WINDOW,
             f"{path}: file size changed from {original_size} to {len(elf.data)}"
         )
 
-    elf.save()
+    # Validate a candidate file and only then replace the original. Writing
+    # first and checking afterwards would leave a corrupted binary behind
+    # whenever a check fails -- and the caller treats a failure as "not
+    # relocated", so it would ship that corruption rather than stopping.
+    staged = path + ".interp-tmp"
+    try:
+        with open(staged, "wb") as fh:
+            fh.write(elf.data)
+        shutil.copymode(path, staged)
 
-    # Re-read from disk and assert the result, rather than trusting our own
-    # in-memory view.
-    verified = Elf64(path)
-    assert_within_window(verified, window, "after relocation")
-    if verified.interp_string() != interp:
-        raise RelocationError(
-            f"{path}: interpreter changed during relocation: "
-            f"{verified.interp_string()!r} != {interp!r}"
-        )
-    if os.path.getsize(path) != original_size:
-        raise RelocationError(f"{path}: on-disk size changed")
+        verified = Elf64(staged)
+        assert_within_window(verified, window, "after relocation")
+        if verified.interp_string() != interp:
+            raise RelocationError(
+                f"{path}: interpreter changed during relocation: "
+                f"{verified.interp_string()!r} != {interp!r}"
+            )
+        if os.path.getsize(staged) != original_size:
+            raise RelocationError(f"{path}: staged size changed")
+        if simulate_detect_libc(staged, window) != "glibc":
+            raise RelocationError(
+                f"{path}: the relocated binary still does not report glibc"
+            )
+
+        os.replace(staged, path)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(staged)
+        raise
 
     after = verified.phdr(verified.interp_index())
     report.update(moved=True, after_offset=after["p_offset"],

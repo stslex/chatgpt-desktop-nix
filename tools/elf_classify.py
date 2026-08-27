@@ -157,6 +157,14 @@ def read_elf(path: str) -> ElfInfo | None:
         strtab_size = next((v for t, v in dynamic if t == DT_STRSZ), None)
         if strtab_addr is not None and strtab_size:
             strtab_off = _vaddr_to_offset(strtab_addr, loads)
+            if strtab_off is None:
+                # Without the string table we cannot read DT_NEEDED, and an
+                # empty needed-list would be classified as "static" and left
+                # unpatched. Refuse rather than quietly getting it wrong.
+                raise ElfError(
+                    f"{path}: DT_STRTAB at 0x{strtab_addr:x} does not fall in "
+                    f"any PT_LOAD, so its dynamic dependencies cannot be read"
+                )
             if strtab_off is not None:
                 fh.seek(strtab_off)
                 strtab = fh.read(strtab_size)
@@ -216,7 +224,18 @@ def classify(info: ElfInfo, system: str) -> Classified:
     # 1. Android prebuilds. Detected from the ELF's own Android note or its
     #    bionic sonames, never from the path, because on an aarch64 host an
     #    android-arm64 prebuild has the same e_machine as a native one.
-    if info.is_android or ANDROID_SONAMES.intersection(info.needed):
+    #
+    #    The note is conclusive on its own. Sonames are not: a host binary
+    #    could legitimately link libc++_shared.so, so they only count when the
+    #    file also does *not* link glibc. A bionic binary needs "libc.so",
+    #    never glibc's "libc.so.6".
+    links_glibc = any(
+        n.startswith(("libc.so.6", "libpthread.so.0", "libdl.so.2"))
+        for n in info.needed
+    )
+    if info.is_android or (
+        ANDROID_SONAMES.intersection(info.needed) and not links_glibc
+    ):
         return Classified(
             info, "android-prebuild", Action.LEAVE_ALONE,
             "bionic/Android prebuild; not loadable on this platform",
@@ -230,8 +249,14 @@ def classify(info: ElfInfo, system: str) -> Classified:
         )
 
     # 3. musl prebuilds shipped alongside the glibc ones.
+    #
+    #    A musl shared object names musl in DT_NEEDED; a musl *executable*
+    #    names it in PT_INTERP instead and may have no musl soname at all.
+    #    Checking only DT_NEEDED would classify such a binary as a host program
+    #    and hand it a glibc interpreter.
     if any(n.startswith("libc.musl-") or n.startswith("ld-musl-")
-           for n in info.needed):
+           for n in info.needed) or (
+            info.interp is not None and "ld-musl-" in info.interp):
         return Classified(
             info, "musl-prebuild", Action.LEAVE_ALONE,
             "links against musl libc; the glibc sibling is used instead",
