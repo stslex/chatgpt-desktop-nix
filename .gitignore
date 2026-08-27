@@ -1,0 +1,8 @@
+# Never commit upstream payloads or downloaded packages.
+*.deb
+payload/
+result
+result-*
+__pycache__/
+*.pyc
+.direnv/

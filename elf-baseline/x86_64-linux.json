@@ -1,0 +1,925 @@
+{
+ "counts": {
+  "android-prebuild": 6,
+  "foreign-architecture": 13,
+  "host-glibc-library": 19,
+  "host-glibc-program": 7,
+  "musl-prebuild": 5,
+  "optional-qt-shim": 2,
+  "static": 5
+ },
+ "entries": [
+  {
+   "action": "patch-interpreter-and-runpath",
+   "etype": "DYN",
+   "interp": "/lib64/ld-linux-x86-64.so.2",
+   "kind": "host-glibc-program",
+   "machine": "x86_64",
+   "needed": [
+    "libdl.so.2",
+    "libpthread.so.0",
+    "libglib-2.0.so.0",
+    "libgobject-2.0.so.0",
+    "libnspr4.so",
+    "libnss3.so",
+    "libnssutil3.so",
+    "libsmime3.so",
+    "libgio-2.0.so.0",
+    "libatk-1.0.so.0",
+    "libatk-bridge-2.0.so.0",
+    "libdbus-1.so.3",
+    "libcups.so.2",
+    "libexpat.so.1",
+    "libxcb.so.1",
+    "libxkbcommon.so.0",
+    "libasound.so.2",
+    "libgbm.so.1",
+    "libX11.so.6",
+    "libXext.so.6",
+    "libcairo.so.2",
+    "libpango-1.0.so.0",
+    "libudev.so.1",
+    "libm.so.6",
+    "libXcomposite.so.1",
+    "libXdamage.so.1",
+    "libXfixes.so.3",
+    "libXrandr.so.2",
+    "libatspi.so.0",
+    "libgdk_pixbuf-2.0.so.0",
+    "libgtk-3.so.0",
+    "libgcc_s.so.1",
+    "libc.so.6",
+    "ld-linux-x86-64.so.2"
+   ],
+   "path": "usr/lib/chatgpt/ChatGPT",
+   "runpath": null
+  },
+  {
+   "action": "patch-interpreter-and-runpath",
+   "etype": "DYN",
+   "interp": "/lib64/ld-linux-x86-64.so.2",
+   "kind": "host-glibc-program",
+   "machine": "x86_64",
+   "needed": [
+    "libdl.so.2",
+    "libpthread.so.0",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libc.so.6",
+    "ld-linux-x86-64.so.2"
+   ],
+   "path": "usr/lib/chatgpt/browser_crashpad_handler",
+   "runpath": null
+  },
+  {
+   "action": "patch-runpath",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "host-glibc-library",
+   "machine": "x86_64",
+   "needed": [
+    "libpthread.so.0",
+    "libgcc_s.so.1",
+    "libc.so.6",
+    "ld-linux-x86-64.so.2"
+   ],
+   "path": "usr/lib/chatgpt/libEGL.so",
+   "runpath": null
+  },
+  {
+   "action": "patch-runpath",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "host-glibc-library",
+   "machine": "x86_64",
+   "needed": [
+    "libpthread.so.0",
+    "libgcc_s.so.1",
+    "libc.so.6",
+    "ld-linux-x86-64.so.2"
+   ],
+   "path": "usr/lib/chatgpt/libGLESv2.so",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "optional-qt-shim",
+   "machine": "x86_64",
+   "needed": [
+    "libstdc++.so.6",
+    "libQt5Core.so.5",
+    "libQt5Gui.so.5",
+    "libQt5Widgets.so.5",
+    "libm.so.6",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/libqt5_shim.so",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "optional-qt-shim",
+   "machine": "x86_64",
+   "needed": [
+    "libstdc++.so.6",
+    "libQt6Core.so.6",
+    "libQt6Gui.so.6",
+    "libQt6Widgets.so.6",
+    "libm.so.6",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/libqt6_shim.so",
+   "runpath": null
+  },
+  {
+   "action": "patch-runpath",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "host-glibc-library",
+   "machine": "x86_64",
+   "needed": [
+    "libdl.so.2",
+    "libpthread.so.0",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libc.so.6",
+    "ld-linux-x86-64.so.2"
+   ],
+   "path": "usr/lib/chatgpt/libvk_swiftshader.so",
+   "runpath": null
+  },
+  {
+   "action": "patch-runpath",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "host-glibc-library",
+   "machine": "x86_64",
+   "needed": [
+    "libdl.so.2",
+    "libpthread.so.0",
+    "libgcc_s.so.1",
+    "libc.so.6",
+    "ld-linux-x86-64.so.2"
+   ],
+   "path": "usr/lib/chatgpt/libvulkan.so.1",
+   "runpath": null
+  },
+  {
+   "action": "patch-runpath",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "host-glibc-library",
+   "machine": "x86_64",
+   "needed": [
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libpthread.so.0",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@parcel/watcher-linux-x64-glibc/watcher.node",
+   "runpath": null
+  },
+  {
+   "action": "patch-runpath",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "host-glibc-library",
+   "machine": "x86_64",
+   "needed": [
+    "libstdc++.so.6",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/dist/native/linux/x64/serial_control.node",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "foreign-architecture",
+   "machine": "arm",
+   "needed": [
+    "libusb-1.0.so.0",
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libpthread.so.0",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/node-hid/prebuilds/HID-linux-arm/node-napi-v4.node",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "foreign-architecture",
+   "machine": "aarch64",
+   "needed": [
+    "libusb-1.0.so.0",
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libpthread.so.0",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/node-hid/prebuilds/HID-linux-arm64/node-napi-v4.node",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "musl-prebuild",
+   "machine": "x86_64",
+   "needed": [
+    "libusb-1.0.so.0",
+    "libstdc++.so.6",
+    "libgcc_s.so.1",
+    "libc.musl-x86_64.so.1"
+   ],
+   "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/node-hid/prebuilds/HID-linux-x64-musl/node-napi-v4.node",
+   "runpath": null
+  },
+  {
+   "action": "patch-runpath",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "host-glibc-library",
+   "machine": "x86_64",
+   "needed": [
+    "libusb-1.0.so.0",
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libpthread.so.0",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/node-hid/prebuilds/HID-linux-x64/node-napi-v4.node",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "foreign-architecture",
+   "machine": "arm",
+   "needed": [
+    "libudev.so.1",
+    "libusb-1.0.so.0",
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libpthread.so.0",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/node-hid/prebuilds/HID_hidraw-linux-arm/node-napi-v4.node",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "foreign-architecture",
+   "machine": "aarch64",
+   "needed": [
+    "libudev.so.1",
+    "libusb-1.0.so.0",
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libpthread.so.0",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/node-hid/prebuilds/HID_hidraw-linux-arm64/node-napi-v4.node",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "musl-prebuild",
+   "machine": "x86_64",
+   "needed": [
+    "libudev.so.1",
+    "libstdc++.so.6",
+    "libgcc_s.so.1",
+    "libc.musl-x86_64.so.1"
+   ],
+   "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/node-hid/prebuilds/HID_hidraw-linux-x64-musl/node-napi-v4.node",
+   "runpath": null
+  },
+  {
+   "action": "patch-runpath",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "host-glibc-library",
+   "machine": "x86_64",
+   "needed": [
+    "libudev.so.1",
+    "libusb-1.0.so.0",
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libpthread.so.0",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/node-hid/prebuilds/HID_hidraw-linux-x64/node-napi-v4.node",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "android-prebuild",
+   "machine": "arm",
+   "needed": [
+    "liblog.so",
+    "libc++_shared.so",
+    "libm.so",
+    "libdl.so",
+    "libc.so"
+   ],
+   "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/serialport/node_modules/@serialport/bindings-cpp/prebuilds/android-arm/node.napi.armv7.node",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "android-prebuild",
+   "machine": "aarch64",
+   "needed": [
+    "liblog.so",
+    "libc++_shared.so",
+    "libm.so",
+    "libdl.so",
+    "libc.so"
+   ],
+   "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/serialport/node_modules/@serialport/bindings-cpp/prebuilds/android-arm64/node.napi.armv8.node",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "foreign-architecture",
+   "machine": "arm",
+   "needed": [
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/serialport/node_modules/@serialport/bindings-cpp/prebuilds/linux-arm/node.napi.armv6.node",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "foreign-architecture",
+   "machine": "arm",
+   "needed": [
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/serialport/node_modules/@serialport/bindings-cpp/prebuilds/linux-arm/node.napi.armv7.node",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "foreign-architecture",
+   "machine": "aarch64",
+   "needed": [
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libpthread.so.0",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/serialport/node_modules/@serialport/bindings-cpp/prebuilds/linux-arm64/node.napi.armv8.node",
+   "runpath": null
+  },
+  {
+   "action": "patch-runpath",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "host-glibc-library",
+   "machine": "x86_64",
+   "needed": [
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libpthread.so.0",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/serialport/node_modules/@serialport/bindings-cpp/prebuilds/linux-x64/node.napi.glibc.node",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "musl-prebuild",
+   "machine": "x86_64",
+   "needed": [
+    "libstdc++.so.6",
+    "libgcc_s.so.1",
+    "libc.musl-x86_64.so.1"
+   ],
+   "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/serialport/node_modules/@serialport/bindings-cpp/prebuilds/linux-x64/node.napi.musl.node",
+   "runpath": null
+  },
+  {
+   "action": "patch-runpath",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "host-glibc-library",
+   "machine": "x86_64",
+   "needed": [
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libpthread.so.0",
+    "libc.so.6",
+    "ld-linux-x86-64.so.2"
+   ],
+   "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/better-sqlite3/build/Release/better_sqlite3.node",
+   "runpath": null
+  },
+  {
+   "action": "patch-runpath",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "host-glibc-library",
+   "machine": "x86_64",
+   "needed": [
+    "libutil.so.1",
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libpthread.so.0",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/node-pty/build/Release/pty.node",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "static",
+   "machine": "x86_64",
+   "needed": [],
+   "path": "usr/lib/chatgpt/resources/codex",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "static",
+   "machine": "x86_64",
+   "needed": [],
+   "path": "usr/lib/chatgpt/resources/codex-code-mode-host",
+   "runpath": null
+  },
+  {
+   "action": "patch-interpreter-and-runpath",
+   "etype": "EXEC",
+   "interp": "/lib64/ld-linux-x86-64.so.2",
+   "kind": "host-glibc-program",
+   "machine": "x86_64",
+   "needed": [
+    "libdl.so.2",
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libpthread.so.0",
+    "libc.so.6",
+    "ld-linux-x86-64.so.2"
+   ],
+   "path": "usr/lib/chatgpt/resources/cua_node/bin/node",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "static",
+   "machine": "x86_64",
+   "needed": [],
+   "path": "usr/lib/chatgpt/resources/cua_node/bin/node_repl",
+   "runpath": null
+  },
+  {
+   "action": "patch-interpreter-and-runpath",
+   "etype": "DYN",
+   "interp": "/lib64/ld-linux-x86-64.so.2",
+   "kind": "host-glibc-program",
+   "machine": "x86_64",
+   "needed": [
+    "libX11.so.6",
+    "libgcc_s.so.1",
+    "libm.so.6",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/.bin/sky_linux_x64",
+   "runpath": null
+  },
+  {
+   "action": "patch-runpath",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "host-glibc-library",
+   "machine": "x86_64",
+   "needed": [
+    "libresolv.so.2",
+    "libdl.so.2",
+    "libstdc++.so.6",
+    "libpthread.so.0",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libc.so.6",
+    "ld-linux-x86-64.so.2"
+   ],
+   "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@img/sharp-libvips-linux-x64/lib/libvips-cpp.so.8.18.3",
+   "runpath": "$ORIGIN/"
+  },
+  {
+   "action": "patch-runpath",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "host-glibc-library",
+   "machine": "x86_64",
+   "needed": [
+    "libvips-cpp.so.8.18.3",
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libpthread.so.0",
+    "libc.so.6",
+    "ld-linux-x86-64.so.2"
+   ],
+   "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@img/sharp-linux-x64/lib/sharp-linux-x64-0.35.3.node",
+   "runpath": "$ORIGIN/../../sharp-libvips-linux-x64/lib:$ORIGIN/../../../sharp-libvips-linux-x64/1.3.2/lib:$ORIGIN/../../node_modules/@img/sharp-libvips-linux-x64/lib:$ORIGIN/../../../node_modules/@img/sharp-libvips-linux-x64/lib:$ORIGIN/../../../../../@img-sharp-libvips-linux-x64-npm-1.3.2-72fc7e4630/node_modules/@img/sharp-libvips-linux-x64/lib"
+  },
+  {
+   "action": "patch-runpath",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "host-glibc-library",
+   "machine": "x86_64",
+   "needed": [
+    "libgcc_s.so.1",
+    "librt.so.1",
+    "libpthread.so.0",
+    "libm.so.6",
+    "libdl.so.2",
+    "libc.so.6",
+    "ld-linux-x86-64.so.2"
+   ],
+   "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@napi-rs/canvas-linux-x64-gnu/skia.linux-x64-gnu.node",
+   "runpath": null
+  },
+  {
+   "action": "patch-interpreter-and-runpath",
+   "etype": "DYN",
+   "interp": "/lib64/ld-linux-x86-64.so.2",
+   "kind": "host-glibc-program",
+   "machine": "x86_64",
+   "needed": [
+    "libX11.so.6",
+    "libgcc_s.so.1",
+    "libm.so.6",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@oai/cua/bin/linux/sky_linux_x64",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "android-prebuild",
+   "machine": "arm",
+   "needed": [
+    "liblog.so",
+    "libc++_shared.so",
+    "libm.so",
+    "libdl.so",
+    "libc.so"
+   ],
+   "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@oai/cua/dist/lib/js/oai_js_browser/dist/skill/node_modules/classic-level/prebuilds/android-arm/classic-level.armv7.node",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "android-prebuild",
+   "machine": "aarch64",
+   "needed": [
+    "liblog.so",
+    "libc++_shared.so",
+    "libm.so",
+    "libdl.so",
+    "libc.so"
+   ],
+   "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@oai/cua/dist/lib/js/oai_js_browser/dist/skill/node_modules/classic-level/prebuilds/android-arm64/classic-level.armv8.node",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "foreign-architecture",
+   "machine": "arm",
+   "needed": [
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@oai/cua/dist/lib/js/oai_js_browser/dist/skill/node_modules/classic-level/prebuilds/linux-arm/classic-level.armv6.node",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "foreign-architecture",
+   "machine": "arm",
+   "needed": [
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@oai/cua/dist/lib/js/oai_js_browser/dist/skill/node_modules/classic-level/prebuilds/linux-arm/classic-level.armv7.node",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "foreign-architecture",
+   "machine": "aarch64",
+   "needed": [
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libpthread.so.0",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@oai/cua/dist/lib/js/oai_js_browser/dist/skill/node_modules/classic-level/prebuilds/linux-arm64/classic-level.armv8.node",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "musl-prebuild",
+   "machine": "x86_64",
+   "needed": [
+    "libstdc++.so.6",
+    "libc.musl-x86_64.so.1"
+   ],
+   "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@oai/cua/dist/lib/js/oai_js_browser/dist/skill/node_modules/classic-level/prebuilds/linux-x64/classic-level.musl.node",
+   "runpath": null
+  },
+  {
+   "action": "patch-runpath",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "host-glibc-library",
+   "machine": "x86_64",
+   "needed": [
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libpthread.so.0",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@oai/cua/dist/lib/js/oai_js_browser/dist/skill/node_modules/classic-level/prebuilds/linux-x64/classic-level.node",
+   "runpath": null
+  },
+  {
+   "action": "patch-interpreter-and-runpath",
+   "etype": "DYN",
+   "interp": "/lib64/ld-linux-x86-64.so.2",
+   "kind": "host-glibc-program",
+   "machine": "x86_64",
+   "needed": [
+    "libX11.so.6",
+    "libgcc_s.so.1",
+    "libm.so.6",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@oai/sky/bin/linux/sky_linux_x64",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "android-prebuild",
+   "machine": "arm",
+   "needed": [
+    "liblog.so",
+    "libc++_shared.so",
+    "libm.so",
+    "libdl.so",
+    "libc.so"
+   ],
+   "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/classic-level/prebuilds/android-arm/classic-level.armv7.node",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "android-prebuild",
+   "machine": "aarch64",
+   "needed": [
+    "liblog.so",
+    "libc++_shared.so",
+    "libm.so",
+    "libdl.so",
+    "libc.so"
+   ],
+   "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/classic-level/prebuilds/android-arm64/classic-level.armv8.node",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "foreign-architecture",
+   "machine": "arm",
+   "needed": [
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/classic-level/prebuilds/linux-arm/classic-level.armv6.node",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "foreign-architecture",
+   "machine": "arm",
+   "needed": [
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/classic-level/prebuilds/linux-arm/classic-level.armv7.node",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "foreign-architecture",
+   "machine": "aarch64",
+   "needed": [
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libpthread.so.0",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/classic-level/prebuilds/linux-arm64/classic-level.armv8.node",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "musl-prebuild",
+   "machine": "x86_64",
+   "needed": [
+    "libstdc++.so.6",
+    "libc.musl-x86_64.so.1"
+   ],
+   "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/classic-level/prebuilds/linux-x64/classic-level.musl.node",
+   "runpath": null
+  },
+  {
+   "action": "patch-runpath",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "host-glibc-library",
+   "machine": "x86_64",
+   "needed": [
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libpthread.so.0",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/classic-level/prebuilds/linux-x64/classic-level.node",
+   "runpath": null
+  },
+  {
+   "action": "patch-runpath",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "host-glibc-library",
+   "machine": "x86_64",
+   "needed": [
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libpthread.so.0",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/native/hid-topology-watcher.node",
+   "runpath": null
+  },
+  {
+   "action": "patch-runpath",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "host-glibc-library",
+   "machine": "x86_64",
+   "needed": [
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libpthread.so.0",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/plugins/openai-bundled/plugins/browser/node_modules/classic-level/prebuilds/linux-x64/classic-level.node",
+   "runpath": null
+  },
+  {
+   "action": "patch-interpreter-and-runpath",
+   "etype": "DYN",
+   "interp": "/lib64/ld-linux-x86-64.so.2",
+   "kind": "host-glibc-program",
+   "machine": "x86_64",
+   "needed": [
+    "libc.so.6",
+    "ld-linux-x86-64.so.2",
+    "libpthread.so.0",
+    "libgcc_s.so.1",
+    "libdl.so.2"
+   ],
+   "path": "usr/lib/chatgpt/resources/plugins/openai-bundled/plugins/chrome/extension-host/linux/x64/extension-host",
+   "runpath": null
+  },
+  {
+   "action": "patch-runpath",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "host-glibc-library",
+   "machine": "x86_64",
+   "needed": [
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libpthread.so.0",
+    "libc.so.6"
+   ],
+   "path": "usr/lib/chatgpt/resources/plugins/openai-bundled/plugins/chrome/node_modules/classic-level/prebuilds/linux-x64/classic-level.node",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "EXEC",
+   "interp": null,
+   "kind": "static",
+   "machine": "x86_64",
+   "needed": [],
+   "path": "usr/lib/chatgpt/resources/plugins/openai-bundled/plugins/latex/bin/tectonic",
+   "runpath": null
+  },
+  {
+   "action": "leave-alone",
+   "etype": "DYN",
+   "interp": null,
+   "kind": "static",
+   "machine": "x86_64",
+   "needed": [],
+   "path": "usr/lib/chatgpt/resources/rg",
+   "runpath": null
+  }
+ ],
+ "system": "x86_64-linux"
+}
