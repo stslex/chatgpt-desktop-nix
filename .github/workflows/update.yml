@@ -62,8 +62,6 @@ jobs:
 
       - name: Resolve and verify the current upstream release
         id: run
-        env:
-          GITHUB_OUTPUT: ${{ github.output }}
         run: |
           set -o pipefail
           # The updater writes sources.json only after the whole signed chain,

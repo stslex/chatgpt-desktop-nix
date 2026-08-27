@@ -1,0 +1,79 @@
+name: Report automation CI failure
+
+# When CI fails on one of the updater's own branches, file or update the issue
+# for that upstream version.
+#
+# The updater workflow can only report failures it sees itself — a bad
+# signature or an unreachable origin. A candidate that verifies cleanly and
+# then fails to build, or fails the graphical smoke test, only shows up much
+# later when CI finishes on the pull request. That is exactly the packaging
+# drift and runtime regression the failure policy cares about, so it needs to
+# reach an issue too.
+#
+# `workflow_run` runs from the default branch with this repository's own
+# configuration, never from the pull request's code, so it is safe to give it a
+# token here.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    name: File or update the version's issue
+    # Only automation branches, and only failures.
+    if: >
+      github.event.workflow_run.conclusion == 'failure' &&
+      startsWith(github.event.workflow_run.head_branch, 'automation/chatgpt-')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Mint an installation token
+        id: app
+        uses: actions/create-github-app-token@67e27a7eb7db372a1c61a7f9bdab8699e9ee57f7 # v1.11.0
+        with:
+          app-id: ${{ vars.UPDATER_APP_ID }}
+          private-key: ${{ secrets.UPDATER_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Classify the failure and report it
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -eu
+
+          # automation/chatgpt-<version>
+          version="${BRANCH#automation/chatgpt-}"
+
+          # Work out which gate failed, so the issue says whether this is
+          # packaging drift or a runtime regression rather than just "CI red".
+          failed="$(gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID/jobs" \
+            --jq '.jobs[] | select(.conclusion == "failure") | .name' | tr '\n' ',')"
+          echo "failed jobs: $failed"
+
+          case "$failed" in
+            *"Verify signed sources"*|*"Changed-file policy"*) kind=trust ;;
+            *"Graphical VM smoke"*)                            kind=runtime ;;
+            *"Build"*|*"Unit tests"*)                          kind=build ;;
+            *)                                                 kind=unknown ;;
+          esac
+          echo "classified as: $kind"
+
+          python3 tools/report_failure.py \
+            --repo "${{ github.repository }}" \
+            --version "$version" \
+            --kind "$kind" \
+            --run-url "$RUN_URL"
+
+          echo "The automation pull request stays open and unmerged; main and" \
+               "the latest release are untouched."
