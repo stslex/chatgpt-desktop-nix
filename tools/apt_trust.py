@@ -835,6 +835,11 @@ def _decompress(name: str, blob: bytes) -> bytes:
         if len(out) > MAX_INDEX_BYTES:
             raise TrustError(
                 f"{name}: decompresses to more than {MAX_INDEX_BYTES} bytes")
+        # A truncated stream decompresses to short output and raises nothing,
+        # so without this the caller would parse a partial control archive as
+        # though it were whole. This is the format the origin actually ships.
+        if not decompressor.eof:
+            raise TrustError(f"{name}: truncated or incomplete xz stream")
         return out
     if name.endswith(".zst"):
         try:
@@ -842,15 +847,40 @@ def _decompress(name: str, blob: bytes) -> bytes:
         except ImportError as exc:  # pragma: no cover - environment dependent
             raise TrustError(
                 "zstd control member requires the zstandard module") from exc
+        # Two properties are needed and no single API gives both.
+        #
+        # stream_reader can be read in bounded chunks, so a compression bomb
+        # never gets to allocate -- but on a truncated frame it returns zero
+        # bytes and raises nothing, which is indistinguishable from an empty
+        # archive. decompressobj reports frame completion through .eof, but
+        # takes no length cap.
+        #
+        # So: bound with the reader first, and only once the output is known
+        # to be within the limit, re-run the same (now provably small) blob
+        # through decompressobj purely to ask whether the frame was whole.
+        # Control archives are a few kilobytes; the second pass costs nothing.
         try:
             reader = zstandard.ZstdDecompressor().stream_reader(blob)
-            out = reader.read(MAX_INDEX_BYTES + 1)
+            out = bytearray()
+            while True:
+                chunk = reader.read(1 << 20)
+                if not chunk:
+                    break
+                out += chunk
+                if len(out) > MAX_INDEX_BYTES:
+                    raise TrustError(
+                        f"{name}: decompresses to more than "
+                        f"{MAX_INDEX_BYTES} bytes")
+
+            decompressor = zstandard.ZstdDecompressor().decompressobj()
+            decompressor.decompress(blob)
+            if not decompressor.eof:
+                raise TrustError(f"{name}: truncated or incomplete zstd frame")
+        except TrustError:
+            raise
         except zstandard.ZstdError as exc:
             raise TrustError(f"{name}: malformed zstd data ({exc})") from exc
-        if len(out) > MAX_INDEX_BYTES:
-            raise TrustError(
-                f"{name}: decompresses to more than {MAX_INDEX_BYTES} bytes")
-        return out
+        return bytes(out)
     if name.endswith(".tar"):
         return blob
     raise TrustError(f"unsupported control member compression: {name}")

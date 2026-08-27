@@ -48,11 +48,29 @@ xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" \
             sleep 1
         done
 
+        # A mapped window is not yet a working application. Chromium maps its
+        # window early and can still die seconds later -- a SIGILL from the
+        # glibc-detection path is exactly that shape. Killing the moment a
+        # window appears would leave no interval in which such a crash could
+        # be observed, so dwell first and require it to still be alive.
+        survived=0
+        if (( mapped )); then
+            for _ in $(seq 1 15); do
+                sleep 1
+                if ! kill -0 "$app" 2>/dev/null; then
+                    echo "the application exited $survived s after mapping" >&2
+                    break
+                fi
+                survived=$(( survived + 1 ))
+            done
+        fi
+
         # Always stop the app, whether or not it mapped anything.
         kill "$app" 2>/dev/null || true
         wait "$app" 2>/dev/null || true
 
-        exit $(( mapped ? 0 : 1 ))
+        if (( mapped && survived >= 15 )); then exit 0; fi
+        exit 1
     ' _ "$launcher" "$log" || {
         echo "the application did not map a window" >&2
         if [[ -s "$log" ]]; then
@@ -69,7 +87,7 @@ xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" \
         exit 1
     }
 
-echo "window mapped"
+echo "window mapped and still running 15s later"
 
 fatal='SIGILL|Illegal instruction|error while loading shared libraries'
 fatal="$fatal"'|cannot open shared object file|symbol lookup error'

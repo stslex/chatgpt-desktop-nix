@@ -246,3 +246,48 @@ class TestReportableVersions(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestZstdTruncation(unittest.TestCase):
+    """A short read is not the same as a complete frame.
+
+    zstandard's stream_reader returns partial data for a truncated frame
+    without raising, so a bounded read() cannot tell "finished" from "cut off".
+    Truncated control metadata must not be parsed as though it were whole.
+    """
+
+    def setUp(self):
+        try:
+            import zstandard  # noqa: F401
+        except ImportError:
+            self.skipTest("zstandard is not available")
+
+    def test_a_complete_frame_round_trips(self):
+        import zstandard as zstd
+        payload = b"Package: chatgpt\n" * 64
+        blob = zstd.ZstdCompressor().compress(payload)
+        self.assertEqual(T._decompress("control.tar.zst", blob), payload)
+
+    def test_a_truncated_frame_is_refused(self):
+        import zstandard as zstd
+        payload = b"Package: chatgpt\n" * 4096
+        blob = zstd.ZstdCompressor().compress(payload)
+        with self.assertRaises(T.TrustError) as ctx:
+            T._decompress("control.tar.zst", blob[: len(blob) // 2])
+        self.assertRegex(str(ctx.exception), "truncated|malformed")
+
+
+class TestXzTruncation(unittest.TestCase):
+    """.xz is the format the origin actually ships, so this path matters most."""
+
+    def test_a_complete_stream_round_trips(self):
+        payload = b"Package: chatgpt\n" * 64
+        self.assertEqual(
+            T._decompress("control.tar.xz", lzma.compress(payload)), payload)
+
+    def test_a_truncated_stream_is_refused(self):
+        payload = b"Package: chatgpt\n" * 8192
+        blob = lzma.compress(payload)
+        with self.assertRaises(T.TrustError) as ctx:
+            T._decompress("control.tar.xz", blob[: len(blob) // 2])
+        self.assertRegex(str(ctx.exception), "truncated|malformed")
