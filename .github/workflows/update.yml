@@ -116,8 +116,17 @@ jobs:
           PREVIOUS: ${{ steps.run.outputs.previous_version }}
         run: |
           set -eu
-          git config user.name "chatgpt-desktop-nix updater"
-          git config user.email "${{ vars.UPDATER_APP_ID }}+chatgpt-desktop-nix-updater[bot]@users.noreply.github.com"
+          slug="${{ vars.UPDATER_APP_SLUG }}"
+          slug="${slug:-chatgpt-desktop-nix-updater}"
+          git config user.name "$slug[bot]"
+          git config user.email "${{ vars.UPDATER_APP_ID }}+$slug[bot]@users.noreply.github.com"
+
+          # Make sure we hold a remote-tracking ref for this branch before
+          # using --force-with-lease. Without one the lease has nothing to
+          # compare against; with one, refreshing a branch left over from an
+          # earlier failed run is safe and clobbering someone else's work is
+          # not possible.
+          git fetch origin "$BRANCH" || true
 
           git checkout -B "$BRANCH"
           git add sources.json
