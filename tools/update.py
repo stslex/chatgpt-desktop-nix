@@ -214,6 +214,48 @@ def guard_same_version_drift(previous: dict, candidate: dict) -> None:
                 )
 
 
+def guard_observed_candidate(observed: dict, candidate: dict) -> None:
+    """Refuse to overwrite a candidate we already recorded for this version.
+
+    Drift protection that only compares against the protected branch has a
+    hole. Suppose main holds V1, the updater opens a V2 pull request pinning
+    digest A, that pull request then fails CI and stays open, and upstream
+    republishes V2 with digest B. The next run still compares B against V1,
+    sees a normal V1 -> V2 upgrade, and force-updates the branch to B. The
+    same-version republish that is supposed to require manual review is
+    accepted silently, and the only record of A is overwritten.
+
+    The existing automation branch is that record, so it is consulted here
+    before anything is written to it.
+    """
+    if not observed:
+        return
+    if observed.get("version") != candidate.get("version"):
+        # A different version entirely: the old branch is simply stale.
+        return
+
+    differences: list[str] = []
+    for arch in sorted(set(observed.get("architectures", {}))
+                       | set(candidate.get("architectures", {}))):
+        old = observed.get("architectures", {}).get(arch, {})
+        new = candidate.get("architectures", {}).get(arch, {})
+        for field in ("filename", "size", "sha256", "hash"):
+            if old.get(field) != new.get(field):
+                differences.append(
+                    f"{arch}.{field}: previously {old.get(field)!r}, "
+                    f"upstream now {new.get(field)!r}")
+    if differences:
+        raise T.TrustError(
+            f"upstream republished {candidate['version']} with different "
+            f"bytes than the candidate already recorded for it:\n  "
+            + "\n  ".join(differences)
+            + "\n\nThe existing automation branch is left untouched. A "
+            "same-version republish is a manual-review event; overwriting the "
+            "recorded candidate would destroy the only evidence of what was "
+            "seen first."
+        )
+
+
 def guard_downgrade(previous: dict, candidate: dict) -> None:
     old_version = previous.get("version")
     if not old_version:
@@ -265,8 +307,9 @@ def main() -> int:
         help="report whether an update exists without writing sources.json",
     )
     parser.add_argument(
-        "--skip-deb-verification", action="store_true",
-        help=argparse.SUPPRESS,  # used only by the fast no-op discovery path
+        "--observed",
+        help="sources.json already recorded for this candidate (typically the "
+             "existing automation branch's copy); compared before writing",
     )
     parser.add_argument(
         "--github-output", action="store_true",
@@ -275,6 +318,7 @@ def main() -> int:
     args = parser.parse_args()
 
     previous = load_sources()
+    resolved = ""
 
     try:
         print(f"Verifying signed release metadata from {T.APT_ORIGIN}")
@@ -288,27 +332,46 @@ def main() -> int:
               f"({', '.join(sorted(release.records))})")
 
         candidate = render_sources(release)
+        resolved = release.version
         guard_downgrade(previous, candidate)
         guard_same_version_drift(previous, candidate)
 
-        current = previous == candidate
-        if current:
-            print(f"sources.json is already current at {release.version}")
+        if args.check:
+            # Discovery only: report whether an update exists. This path never
+            # writes and never opens a pull request, so it does not need the
+            # package bodies.
+            available = previous != candidate
+            print(f"update available: {previous.get('version', '(none)')} -> "
+                  f"{release.version}" if available
+                  else f"sources.json is already current at {release.version}")
+            _emit_output(args, updated=available, version=release.version,
+                         previous=previous.get("version", ""))
+            return 10 if available else 0
+
+        # Verify the package bodies BEFORE deciding there is nothing to do.
+        #
+        # Returning early on "already current" would mean a successful
+        # scheduled run had checked only the signed index -- never that the
+        # artefacts still exist, still match their recorded size and digest,
+        # still carry a valid debsigs signature, or still declare the expected
+        # control fields. A daily run that verifies nothing is not a daily
+        # verification.
+        print("Verifying package bodies")
+        with tempfile.TemporaryDirectory(prefix="chatgpt-deb-") as workdir:
+            verify_debs(release, workdir)
+
+        if previous == candidate:
+            print(f"sources.json is already current at {release.version}, and "
+                  f"both package bodies verified")
             _emit_output(args, updated=False, version=release.version,
                          previous=previous.get("version", ""))
             return 0
 
-        if args.check:
-            print(f"update available: {previous.get('version', '(none)')} -> "
-                  f"{release.version}")
-            _emit_output(args, updated=True, version=release.version,
-                         previous=previous.get("version", ""))
-            return 10
-
-        if not args.skip_deb_verification:
-            print("Verifying package bodies")
-            with tempfile.TemporaryDirectory(prefix="chatgpt-deb-") as workdir:
-                verify_debs(release, workdir)
+        if args.observed:
+            with open(args.observed, encoding="utf-8") as fh:
+                observed = json.load(fh)
+            guard_observed_candidate(observed, candidate)
+            print("  candidate matches the one already recorded for this version")
 
         write_sources(candidate)
         print(f"sources.json updated to {release.version}")
@@ -323,13 +386,13 @@ def main() -> int:
             "Resolve this by manual engineering review; do not add a waiver.",
             file=sys.stderr,
         )
-        _emit_output(args, updated=False, version="", previous=previous.get("version", ""),
-                     failure="trust")
+        _emit_output(args, updated=False, version=resolved,
+                     previous=previous.get("version", ""), failure="trust")
         return 20
     except NetworkError as exc:
         print(f"\nNETWORK FAILURE: {exc}", file=sys.stderr)
-        _emit_output(args, updated=False, version="", previous=previous.get("version", ""),
-                     failure="network")
+        _emit_output(args, updated=False, version=resolved,
+                     previous=previous.get("version", ""), failure="network")
         return 30
 
 

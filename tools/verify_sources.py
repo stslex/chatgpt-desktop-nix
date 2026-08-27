@@ -36,6 +36,12 @@ def main() -> int:
         "--strict", action="store_true",
         help="also download and verify each .deb body and its control fields",
     )
+    parser.add_argument(
+        "--base-sources",
+        help="the protected branch's sources.json; when given, the committed "
+             "metadata is additionally held to the no-downgrade and "
+             "no-same-version-drift rules against it",
+    )
     args = parser.parse_args()
 
     committed = U.load_sources()
@@ -95,6 +101,30 @@ def main() -> int:
         return 21
 
     print("\ncommitted sources.json matches the independently derived metadata")
+
+    if args.base_sources:
+        # CI must apply the same policy the updater does, not merely check that
+        # the committed file matches what the origin currently serves. A
+        # downgrade, or a same-version republish under different digests, is
+        # perfectly consistent with the live origin and still must not merge.
+        print(f"\nApplying update policy against {args.base_sources}")
+        try:
+            with open(args.base_sources, encoding="utf-8") as fh:
+                base = json.load(fh)
+        except (OSError, ValueError) as exc:
+            print(f"cannot read the base metadata: {exc}", file=sys.stderr)
+            return 21
+        try:
+            U.guard_downgrade(base, committed)
+            U.guard_same_version_drift(base, committed)
+        except T.TrustError as exc:
+            print(f"\nPOLICY FAILURE: {exc}", file=sys.stderr)
+            return 20
+        if base.get("version") == committed.get("version"):
+            print(f"  unchanged at {committed.get('version')}")
+        else:
+            print(f"  {base.get('version')} -> {committed.get('version')}: "
+                  f"a permitted upgrade with no digest drift")
 
     if args.strict:
         import tempfile

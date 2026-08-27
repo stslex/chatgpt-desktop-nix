@@ -369,6 +369,44 @@ class IndexEntry:
     path: str
 
 
+def check_distribution_identity(release_text: str,
+                                architectures: Sequence[str]) -> None:
+    """Assert the signed Release describes the distribution we asked for.
+
+    The signature proves OpenAI published these bytes. It does not prove they
+    are the bytes for `stable`/`main` — a signed index for some other suite
+    would verify just as well. Where the origin states its identity, hold it to
+    it.
+    """
+    fields = parse_control_paragraph(release_text.split("\nMD5Sum:")[0])
+
+    for field, expected in (("Suite", APT_SUITE), ("Codename", APT_SUITE)):
+        actual = fields.get(field)
+        if actual is not None and actual != expected:
+            raise TrustError(
+                f"signed Release declares {field}: {actual!r}, expected "
+                f"{expected!r}. This index is not for the distribution this "
+                f"package tracks."
+            )
+
+    components = fields.get("Components")
+    if components is not None and APT_COMPONENT not in components.split():
+        raise TrustError(
+            f"signed Release declares Components: {components!r}, which does "
+            f"not include {APT_COMPONENT!r}"
+        )
+
+    declared = fields.get("Architectures")
+    if declared is not None:
+        listed = set(declared.split())
+        missing = sorted(set(architectures) - listed)
+        if missing:
+            raise TrustError(
+                f"signed Release declares Architectures: {declared!r}, which "
+                f"omits {missing}"
+            )
+
+
 def parse_release_sha256(release_text: str) -> dict[str, IndexEntry]:
     """Extract the SHA-256 section of a Release/InRelease payload.
 
@@ -553,23 +591,53 @@ def read_deb_control(deb_path: str) -> dict[str, str]:
     members = _ar_members(deb_path)
     if "debian-binary" not in members:
         raise TrustError(f"{deb_path}: not a Debian archive (no debian-binary)")
-    control_name = next(
-        (n for n in members if n.startswith("control.tar")), None
-    )
-    if control_name is None:
+    control_names = [n for n in members if n.startswith("control.tar")]
+    if not control_names:
         raise TrustError(f"{deb_path}: no control.tar member")
-    blob = members[control_name]
-    raw = _decompress(control_name, blob)
+    if len(control_names) > 1:
+        raise TrustError(
+            f"{deb_path}: {len(control_names)} control.tar members "
+            f"({control_names}); exactly one is expected")
+    control_name = control_names[0]
+    raw = _decompress(control_name, members[control_name])
+
     import io
     import tarfile
-    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as tar:
-        for member in tar.getmembers():
-            if member.name.lstrip("./") == "control":
-                fh = tar.extractfile(member)
-                if fh is None:
-                    raise TrustError(f"{deb_path}: unreadable control file")
-                return parse_control_paragraph(fh.read().decode("utf-8"))
-    raise TrustError(f"{deb_path}: control.tar has no control file")
+    try:
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as tar:
+            found = None
+            for member in tar.getmembers():
+                normalised = member.name.lstrip("./")
+                # A control archive describes files inside the package; a name
+                # that escapes its own root is malformed regardless of whether
+                # we would ever write it out.
+                if normalised.startswith("/") or ".." in normalised.split("/"):
+                    raise TrustError(
+                        f"{deb_path}: control.tar member {member.name!r} has a "
+                        f"traversal-shaped name")
+                if normalised != "control":
+                    continue
+                if not member.isfile():
+                    raise TrustError(
+                        f"{deb_path}: control.tar entry 'control' is not a "
+                        f"regular file (type {member.type!r})")
+                if found is not None:
+                    raise TrustError(
+                        f"{deb_path}: control.tar has more than one 'control'")
+                found = member
+            if found is None:
+                raise TrustError(f"{deb_path}: control.tar has no control file")
+            fh = tar.extractfile(found)
+            if fh is None:
+                raise TrustError(f"{deb_path}: unreadable control file")
+            return parse_control_paragraph(fh.read().decode("utf-8"))
+    except TrustError:
+        raise
+    except tarfile.TarError as exc:
+        raise TrustError(f"{deb_path}: malformed control.tar ({exc})") from exc
+    except UnicodeDecodeError as exc:
+        raise TrustError(
+            f"{deb_path}: control file is not valid UTF-8 ({exc})") from exc
 
 
 def deb_gpgorigin(deb_path: str) -> "bytes | None":
@@ -674,11 +742,17 @@ def _ar_members(path: str, ordered: bool = False):
                 break
             if len(header) < 60:
                 raise TrustError(f"{path}: truncated ar header")
+            if header[58:60] != b"`\n":
+                raise TrustError(
+                    f"{path}: ar header is missing its magic terminator")
             name = header[0:16].decode("ascii", "replace").rstrip()
             size_field = header[48:58].decode("ascii", "replace").strip()
             if not size_field.isdigit():
                 raise TrustError(f"{path}: malformed ar member size")
             size = int(size_field)
+            if size > MAX_DEB_BYTES:
+                raise TrustError(
+                    f"{path}: ar member {name!r} declares an implausible size")
             data = fh.read(size)
             if len(data) != size:
                 raise TrustError(f"{path}: truncated ar member {name!r}")
@@ -704,18 +778,59 @@ def _ar_members(path: str, ordered: bool = False):
                     )
                 name = long_names[offset:end].decode("ascii", "replace")
             name = name.rstrip("/")
+            if any(existing == name for existing, _ in out):
+                # Duplicate names make "which member is the control archive?"
+                # ambiguous, and let a signature cover different bytes than a
+                # reader selects.
+                raise TrustError(
+                    f"{path}: duplicate ar member {name!r}; a Debian archive "
+                    f"has unique member names")
             out.append((name, data))
     if ordered:
         return out
     return dict(out)
 
 
+def _gunzip_bounded(blob: bytes, limit: int, what: str) -> bytes:
+    """Decompress, refusing to allocate more than ``limit`` bytes.
+
+    ``gzip.decompress`` has no bound, so a small verified index whose
+    compressed form expands enormously would still exhaust memory. The digest
+    check upstream of this does not help: a compression bomb can be signed.
+    """
+    import io
+    out = bytearray()
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(blob)) as fh:
+            while True:
+                chunk = fh.read(1 << 20)
+                if not chunk:
+                    break
+                out += chunk
+                if len(out) > limit:
+                    raise TrustError(
+                        f"{what}: decompresses to more than {limit} bytes")
+    except TrustError:
+        raise
+    except (OSError, EOFError, gzip.BadGzipFile) as exc:
+        raise TrustError(f"{what}: malformed gzip data ({exc})") from exc
+    return bytes(out)
+
+
 def _decompress(name: str, blob: bytes) -> bytes:
     if name.endswith(".gz"):
-        return gzip.decompress(blob)
+        return _gunzip_bounded(blob, MAX_INDEX_BYTES, name)
     if name.endswith(".xz"):
         import lzma
-        return lzma.decompress(blob)
+        try:
+            decompressor = lzma.LZMADecompressor()
+            out = decompressor.decompress(blob, MAX_INDEX_BYTES + 1)
+        except lzma.LZMAError as exc:
+            raise TrustError(f"{name}: malformed xz data ({exc})") from exc
+        if len(out) > MAX_INDEX_BYTES:
+            raise TrustError(
+                f"{name}: decompresses to more than {MAX_INDEX_BYTES} bytes")
+        return out
     if name.endswith(".zst"):
         try:
             import zstandard  # type: ignore
@@ -780,6 +895,7 @@ def resolve_signed_release(
         raise TrustError("InRelease is implausibly large")
     release_text = verify_inrelease(inrelease, keyring_path)
     check_freshness(release_text, now=now)
+    check_distribution_identity(release_text, architectures)
     published = release_date(release_text)
     index = parse_release_sha256(release_text)
 
@@ -793,7 +909,7 @@ def resolve_signed_release(
             raise TrustError(f"{rel} is implausibly large")
         blob = fetch(f"{APT_ORIGIN}/dists/{APT_SUITE}/{rel}")
         verify_blob(blob, entry, rel)
-        text = gzip.decompress(blob).decode("utf-8")
+        text = _gunzip_bounded(blob, MAX_INDEX_BYTES, rel).decode("utf-8")
         records[arch] = parse_packages(text, arch)
 
     version = require_architecture_agreement(records)
