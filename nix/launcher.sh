@@ -328,14 +328,18 @@ collect_unused_caches() {
 
     # Caches for other versions are deliberately NOT collected.
     #
-    # Doing it safely requires proving no other process is using one, and the
-    # obvious test does not prove that: `flock --nonblock <lock> --command
-    # true` releases the lock the moment `true` exits, so between that check
-    # and the `rm -rf` another launch can legitimately acquire it and start
-    # using the cache we are about to delete. Holding the lock across the
-    # deletion from a shell, for every candidate, while not deadlocking against
-    # our own in-use lock, is more machinery than the problem justifies for a
-    # first release.
+    # Not because it cannot be done: publish_plugin_cache does exactly this
+    # when it has to rebuild a damaged entry -- open the in-use lock on a
+    # descriptor, take it exclusively and non-blocking, hold it across the
+    # deletion. What does not work is the obvious one-liner: `flock --nonblock
+    # <lock> --command true` releases the lock the moment `true` exits, so
+    # between that check and the `rm -rf` another launch can legitimately
+    # acquire it and start using the cache we are about to delete.
+    #
+    # Sweeping every OTHER version on every launch is a different proposition
+    # from repairing the one entry we already need: it means deleting
+    # directories this launch has no other reason to touch, for a saving that
+    # is bounded anyway.
     #
     # The cost of not collecting is bounded and visible: roughly 50 MB of
     # copied plugin files per upstream version under

@@ -317,15 +317,22 @@ build and discarded rather than trusted. Concurrent launches serialise on an
 `flock`, and each launch holds a shared lock on its own entry for as long as it
 runs.
 
-**Caches for older versions are deliberately not deleted.** Doing it safely
-needs the exclusive lock held across the deletion, and the obvious test does not
-provide that: `flock --nonblock <lock> --command true` releases the lock the
-moment `true` exits, leaving a window in which another launch can legitimately
-claim the cache about to be removed. The cost of keeping them is bounded and
-visible — roughly 50 MB per upstream version under
-`$XDG_CACHE_HOME/chatgpt-desktop-nix/resources`, which is always safe to delete
-by hand when the app is not running. The cost of collecting wrongly is pulling
-resources out from under a running application.
+**Caches for older versions are deliberately not deleted.** Not because it
+cannot be done safely — the launcher now does exactly that when it has to
+rebuild a *damaged* cache, opening the entry's in-use lock on a descriptor,
+taking it exclusively and non-blocking, and holding it across the deletion. The
+naive form is what does not work: `flock --nonblock <lock> --command true`
+releases the lock the moment `true` exits, leaving a window in which another
+launch can legitimately claim the cache about to be removed.
+
+Sweeping *every* other version that way, on every launch, is a different
+proposition: it means deleting directories this launch has no other reason to
+touch, and getting it wrong pulls resources out from under a running
+application. The cost of not doing it is bounded and visible — roughly 50 MB
+per upstream version under `$XDG_CACHE_HOME/chatgpt-desktop-nix/resources`,
+which is always safe to delete by hand when the app is not running. That is a
+trade worth making for a first release, and it is a choice rather than a
+limitation.
 
 ### The Codex command sandbox
 
