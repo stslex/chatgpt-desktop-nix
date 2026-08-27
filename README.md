@@ -127,11 +127,17 @@ container may drop the capability, seccomp may block the syscall. In each of
 those the sysctls look fine and Chromium's zygote still dies with `SIGTRAP` and
 no output.
 
-`--version` and `--help` are exempt, and only those, and only as the sole
-argument. Electron answers them in the browser process before any renderer
-exists, so they do not depend on the sandbox; refusing them would protect
-nothing while breaking packaging checks, container builds and CI. Every other
-invocation goes through the check.
+`--version` is exempt, and only `--version`, and only as the sole argument.
+Electron answers it in the browser process before any renderer exists, so it
+does not depend on the sandbox; refusing it would protect nothing while
+breaking packaging checks, container builds and CI.
+
+Nothing else is exempt, which is a behavioural fact rather than caution.
+Measured against this build, `-v` is **not** an abbreviation of `--version`: it
+initialises Ozone and starts the application. Exempting it would skip the
+precheck for a real start. `--help` and `-h` exec `man ChatGPT`, which has no
+manual entry. Every invocation other than a lone `--version` goes through the
+check.
 
 On NixOS namespaces are enabled by default. If you have changed that:
 

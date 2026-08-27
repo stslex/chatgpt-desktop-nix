@@ -295,24 +295,30 @@ inuse_lock() {
 # Main
 # ---------------------------------------------------------------------------
 
-# `--version` and `--help` are answered by Electron in the browser process,
-# before any renderer or zygote exists, so they do not depend on the sandbox
-# that the check below is about. Refusing them on a host without user
-# namespaces protects nothing and makes the package unusable for the things
-# that legitimately ask a binary what it is: a packaging check, `nix run . --
-# --version`, a container build, a CI job on a runner where AppArmor restricts
-# unprivileged namespaces.
+# `--version` alone is answered by Electron in the browser process, before any
+# renderer or zygote exists, so it does not depend on the sandbox the check
+# below is about. Refusing it on a host without user namespaces protects
+# nothing and makes the package unusable for the things that legitimately ask a
+# binary what it is: a packaging check, `nix run . -- --version`, a container
+# build, a CI job on a runner where AppArmor restricts unprivileged namespaces.
 #
-# This is not an escape hatch for starting the application. The whole argument
-# list has to be exactly one of these flags; any other argument, and any
-# combination with other arguments, goes through the check. And if Electron
-# ever did need the sandbox to answer these, it would fail on its own rather
-# than start unsandboxed.
+# Exactly one flag is exempt, and that is not tidiness -- it is what the
+# behaviour supports. Measured against this build:
+#
+#   --version   prints the version, exits 0, touches no display
+#   -v          initialises Ozone/X11 and starts the app (exit 1 with no
+#               display). It is NOT an abbreviation of --version.
+#   --help, -h  exec `man ChatGPT`, which has no manual entry (exit 16)
+#
+# So `-v` must go through the check like any other argument: exempting it would
+# skip the sandbox precheck for a genuine application start, which is the one
+# thing this must never do. --help is harmless but pointless to exempt.
+#
+# The whole argument list has to be exactly `--version`; any other argument,
+# and any combination with other arguments, goes through the check.
 needs_sandbox=1
-if (( $# == 1 )); then
-    case "$1" in
-        --version|-v|--help|-h) needs_sandbox=0 ;;
-    esac
+if (( $# == 1 )) && [[ "$1" == "--version" ]]; then
+    needs_sandbox=0
 fi
 
 if (( needs_sandbox )); then

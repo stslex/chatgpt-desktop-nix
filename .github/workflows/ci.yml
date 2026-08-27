@@ -243,21 +243,31 @@ jobs:
           else
             echo "this runner restricts unprivileged user namespaces;"
             echo "the launcher must refuse to start the app, and say why"
+            # Both of these must be refused. `-v` is here because it looks like
+            # an abbreviation of --version and is not one: Electron initialises
+            # Ozone and starts the app for it, so if it were ever added to the
+            # exemption the precheck would be skipped for a real start. This is
+            # the assertion that would catch that.
+            #
             # No display here either, but the namespace check runs first and
-            # exits before Electron is ever executed, so this cannot hang.
-            if err="$("$out/bin/chatgpt" 2>&1)"; then
-              echo "the launcher started the application on a host with no" >&2
-              echo "user namespaces, which is exactly what it must never do" >&2
-              exit 1
-            fi
-            case "$err" in
-              *"unprivileged user namespaces are not available"*)
-                echo "refused, with the expected diagnostic" ;;
-              *)
-                echo "refused, but not for the expected reason:" >&2
-                echo "$err" >&2
-                exit 1 ;;
-            esac
+            # exits before Electron is ever executed, so neither can hang.
+            for args in "" "-v"; do
+              # shellcheck disable=SC2086
+              if err="$("$out/bin/chatgpt" $args 2>&1)"; then
+                echo "the launcher started the application on a host with no" >&2
+                echo "user namespaces (args: '$args'), which is exactly what" >&2
+                echo "it must never do" >&2
+                exit 1
+              fi
+              case "$err" in
+                *"unprivileged user namespaces are not available"*)
+                  echo "refused '$args', with the expected diagnostic" ;;
+                *)
+                  echo "refused '$args', but not for the expected reason:" >&2
+                  echo "$err" >&2
+                  exit 1 ;;
+              esac
+            done
           fi
 
       - name: Bounded graphical startup under Xvfb

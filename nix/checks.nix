@@ -181,17 +181,25 @@ in
     grep -q 'check_user_namespaces()' ${launcher}
     grep -qE '^ *check_user_namespaces$' ${launcher}
 
-    echo "the --version/--help exemption must require a lone argument"
-    # Electron answers these before any renderer exists, so they do not need
-    # the sandbox. That exemption must not become a way to start the app: the
-    # whole argument list has to be exactly one of those flags.
-    grep -qE '^if \(\( \$# == 1 \)\); then$' ${launcher} \
-      || { echo "the exemption is not bounded to a single argument" >&2; exit 1; }
-    if grep -qE 'needs_sandbox=0' ${launcher}; then
-      # and only for those flags
-      grep -qE '^ *--version\|-v\|--help\|-h\) needs_sandbox=0 ;;$' ${launcher} \
-        || { echo "the exemption covers unexpected arguments" >&2; exit 1; }
+    echo "the sandbox exemption must cover --version and nothing else"
+    # Electron answers --version before any renderer exists, so it does not
+    # need the sandbox. Nothing else measured here has that property: `-v` is
+    # not an abbreviation of --version, it initialises Ozone and starts the
+    # app, so exempting it would skip the precheck for a genuine application
+    # start. The exemption must stay exactly this shape.
+    grep -qE '^if \(\( \$# == 1 \)\) && \[\[ "\$1" == "--version" \]\]; then$' ${launcher} \
+      || { echo "the sandbox exemption is not the expected exact form:" >&2
+           grep -n 'needs_sandbox' ${launcher} >&2; exit 1; }
+    if [ "$(grep -c 'needs_sandbox=0' ${launcher})" != "1" ]; then
+      echo "more than one path clears needs_sandbox" >&2; exit 1
     fi
+    for flag in -v -h --help; do
+      if grep -qE "needs_sandbox=0" ${launcher} \
+         && grep -qE "\\$flag\\b[^)]*\\) *needs_sandbox=0" ${launcher}; then
+        echo "$flag must not be exempt from the sandbox precheck" >&2
+        exit 1
+      fi
+    done
   '';
 
   launcher-runs-with-no-environment =
