@@ -216,44 +216,36 @@ publish_plugin_cache() {
 # its whole lifetime, so an entry is provably unused only when an *exclusive*
 # non-blocking lock on it succeeds.
 collect_unused_caches() {
-    local cache_root="$1" key="$2" old base lock
+    local cache_root="$1" key="$2" old
 
-    for old in "$cache_root"/*; do
-        [[ -d "$old" ]] || continue
-        base="$(basename "$old")"
-        [[ "$base" == "$key" ]] && continue
-        lock="$(inuse_lock "$cache_root" "$base")"
-
-        # Skip anything whose in-use lock was touched recently. The lock itself
-        # is the real signal, but this is cheap insurance: if the descriptor
-        # were ever lost — a child that closes inherited descriptors, say — a
-        # cache in active use would still not be collected out from under a
-        # running application on the same day.
-        if [[ -e "$lock" ]]; then
-            local mtime now
-            mtime="$(stat -c %Y "$lock" 2>/dev/null || echo 0)"
-            now="$(date +%s)"
-            if (( now - mtime < 43200 )); then
-                continue
-            fi
-        fi
-
-        # If anyone still holds the in-use lock, skip this entry entirely.
-        if ! flock --exclusive --nonblock "$lock" --command true 2>/dev/null; then
-            continue
-        fi
-        chmod -R u+w "$old" 2>/dev/null || true
-        rm -rf "$old" 2>/dev/null || true
-        rm -f "$lock" "$cache_root/.$base.build.lock" 2>/dev/null || true
-    done
-
-    # Abandoned staging directories from a SIGKILLed launch: an EXIT trap never
-    # runs for those, so sweep them here instead. These are only ever created
-    # while the build lock is held, which we hold now, so none can be live.
-    for old in "$cache_root"/.staging-*; do
+    # Only this key's own abandoned staging directories are swept, and only
+    # while this key's build lock is held — which the sole caller does hold.
+    # A `.staging-<otherkey>.*` directory belongs to a different key's build
+    # lock and may be actively being written right now, so it is not ours to
+    # remove.
+    for old in "$cache_root/.staging-$key."*; do
         [[ -d "$old" ]] || continue
         rm -rf "$old" 2>/dev/null || true
     done
+
+    # Caches for other versions are deliberately NOT collected.
+    #
+    # Doing it safely requires proving no other process is using one, and the
+    # obvious test does not prove that: `flock --nonblock <lock> --command
+    # true` releases the lock the moment `true` exits, so between that check
+    # and the `rm -rf` another launch can legitimately acquire it and start
+    # using the cache we are about to delete. Holding the lock across the
+    # deletion from a shell, for every candidate, while not deadlocking against
+    # our own in-use lock, is more machinery than the problem justifies for a
+    # first release.
+    #
+    # The cost of not collecting is bounded and visible: roughly 50 MB of
+    # copied plugin files per upstream version under
+    # $XDG_CACHE_HOME/chatgpt-desktop-nix/resources. Deleting that directory is
+    # always safe when the app is not running. The cost of collecting wrongly
+    # is pulling resources out from under a running application, which is not a
+    # trade worth making to save disk.
+    :
 }
 
 inuse_lock() {
@@ -274,8 +266,16 @@ if [[ -n "${XDG_CACHE_HOME:-}" ]]; then
 elif [[ -n "${HOME:-}" ]]; then
     cache_home="$HOME/.cache"
 else
-    cache_home="${TMPDIR:-/tmp}/chatgpt-desktop-nix-$(id -u)"
+    # A fixed path under a world-writable directory is a name another user can
+    # create first. Use a private directory we make ourselves, and refuse to
+    # reuse one we do not own.
+    cache_home="$(mktemp -d "${TMPDIR:-/tmp}/chatgpt-desktop-nix.XXXXXXXX")" || {
+        die "neither XDG_CACHE_HOME nor HOME is set, and no temporary
+directory could be created. Set HOME or XDG_CACHE_HOME and try again."
+    }
+    chmod 700 "$cache_home"
     warn "neither XDG_CACHE_HOME nor HOME is set; caching under $cache_home"
+    warn "this cache is per-launch and will not be reused"
 fi
 
 cache_root="$cache_home/chatgpt-desktop-nix/resources"
@@ -300,7 +300,19 @@ if [[ -d /run/opengl-driver ]]; then
     export LIBGL_DRIVERS_PATH="${LIBGL_DRIVERS_PATH:-/run/opengl-driver/lib/dri}"
     export LIBVA_DRIVERS_PATH="${LIBVA_DRIVERS_PATH:-/run/opengl-driver/lib/dri}"
     export __EGL_VENDOR_LIBRARY_DIRS="${__EGL_VENDOR_LIBRARY_DIRS:-/run/opengl-driver/share/glvnd/egl_vendor.d}"
-    export VK_ICD_FILENAMES="${VK_ICD_FILENAMES:-/run/opengl-driver/share/vulkan/icd.d}"
+    # VK_ICD_FILENAMES is a colon-separated list of manifest FILES; pointing it
+    # at a directory makes the loader find nothing, which is worse than leaving
+    # it unset since the loader scans the standard directories on its own.
+    # Only set it if we can build a real list.
+    if [[ -z "${VK_ICD_FILENAMES:-}" ]]; then
+        _icds=""
+        for _icd in /run/opengl-driver/share/vulkan/icd.d/*.json; do
+            [[ -f "$_icd" ]] || continue
+            _icds="${_icds:+$_icds:}$_icd"
+        done
+        [[ -n "$_icds" ]] && export VK_ICD_FILENAMES="$_icds"
+        unset _icd _icds
+    fi
 fi
 
 electron_args=()
@@ -361,11 +373,22 @@ fi
 # entry and Electron.
 if [[ "$resources_path" != "@out@/lib/chatgpt/resources" ]]; then
     lock_path="$(inuse_lock "$cache_root" "@resourceKey@")"
-    if : >> "$lock_path" 2>/dev/null; then
-        touch "$lock_path" 2>/dev/null || true
-        if exec 9>>"$lock_path" 2>/dev/null; then
-            flock --shared --nonblock 9 2>/dev/null || true
+    held=0
+    if : >> "$lock_path" 2>/dev/null && exec 9>>"$lock_path" 2>/dev/null; then
+        if flock --shared --nonblock 9 2>/dev/null; then
+            held=1
         fi
+    fi
+    if (( ! held )); then
+        # We could not mark this cache as in use. Nothing collects other
+        # versions' caches today, so this is not currently dangerous — but
+        # continuing to use a cache we cannot claim is exactly the shape of
+        # bug that would bite the moment collection is added. Fall back to the
+        # read-only store copy, which is always safe.
+        warn "could not take the in-use lock on $resources_path"
+        resources_path="@out@/lib/chatgpt/resources"
+        export CODEX_ELECTRON_BUNDLED_PLUGINS_RESOURCES_PATH="$resources_path"
+        warn "using the read-only store resources instead"
     fi
 fi
 

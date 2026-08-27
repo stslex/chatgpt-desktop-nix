@@ -70,6 +70,7 @@
 , gnutar
 , gzip
 , procps
+, xz
 , which
 , xdg-utils
 
@@ -88,12 +89,6 @@ let
   source = sources.architectures.${debArch} or (throw
     "chatgpt-desktop: sources.json has no entry for ${debArch}");
 
-  # The upstream loader path each architecture's binaries name. Used by the
-  # bwrap shim as the bind target for downloaded generic binaries.
-  genericInterpreter = {
-    x86_64-linux = "/lib64/ld-linux-x86-64.so.2";
-    aarch64-linux = "/lib/ld-linux-aarch64.so.1";
-  }.${stdenv.hostPlatform.system};
 
   # Libraries resolved through each ELF's own RUNPATH. Never exported as
   # LD_LIBRARY_PATH: that would leak into git/node/python children the app
@@ -130,24 +125,58 @@ let
   packageBins = lib.makeBinPath [
     bash coreutils findutils gawk gnugrep gnused gnutar gzip
     git procps which xdg-utils util-linux bubblewrap
+
+    # `xz`: the payload handles .tar.xz, and GNU tar shells out to the xz
+    # binary for those. Upstream's Depends lists xz-utils for the same reason.
+    xz
+
+    # `gio`, from glib: Electron's shell.trashItem() has no in-process
+    # implementation on Linux and execs a trash helper. The payload references
+    # trashItem in a dozen places, and upstream's Depends lists
+    # `libglib2.0-bin | kde-cli-tools | ... | trash-cli | gvfs-bin` -- that
+    # alternation is exactly this dependency. glib.bin provides gio.
+    glib.bin
   ];
 
   # A `bwrap` that bridges downloaded generic binaries into the sandbox on
-  # NixOS. See nix/bwrap-shim.c.
+  # NixOS. See nix/bwrap-shim.c for why it injects only NIX_LD variables and
+  # never a bind mount.
+  # The upstream loader path each architecture's binaries name.
+  genericInterpreter = {
+    x86_64-linux = "/lib64/ld-linux-x86-64.so.2";
+    aarch64-linux = "/lib/ld-linux-aarch64.so.1";
+  }.${stdenv.hostPlatform.system};
+
+  bwrapShimFlags = lib.concatStringsSep " " [
+    "-DREAL_BWRAP='\"${bubblewrap}/bin/bwrap\"'"
+    "-DNIX_LD_PATH='\"${nix-ld}/libexec/nix-ld\"'"
+    "-DGENERIC_INTERPRETER='\"${genericInterpreter}\"'"
+    "-DNIX_LD_TARGET='\"${stdenv.cc.bintools.dynamicLinker}\"'"
+    "-DNIX_LD_LIBRARY_PATH_VALUE='\"${libraryPath}\"'"
+  ];
+
   bwrapShim = runCommandCC "chatgpt-bwrap-shim-${version}"
     {
       meta.description =
-        "bwrap wrapper that binds nix-ld over the generic loader path";
+        "bwrap wrapper that injects NIX_LD into Codex's command sandbox";
     }
     ''
       mkdir -p "$out/bin"
       cc -O2 -Wall -Wextra -Werror -std=gnu11 \
-        -DREAL_BWRAP='"${bubblewrap}/bin/bwrap"' \
-        -DNIX_LD_PATH='"${nix-ld}/libexec/nix-ld"' \
-        -DNIX_LD_TARGET='"${stdenv.cc.bintools.dynamicLinker}"' \
-        -DNIX_LD_LIBRARY_PATH_VALUE='"${libraryPath}"' \
-        -DGENERIC_INTERPRETER='"${genericInterpreter}"' \
+        ${bwrapShimFlags} \
         -o "$out/bin/bwrap" ${./bwrap-shim.c}
+    '';
+
+  # The same source compiled with a trace hook, for tests only. The production
+  # binary above has no such hook: an inherited environment variable must never
+  # be able to suppress the sandbox or choose a file to truncate.
+  bwrapShimTest = runCommandCC "chatgpt-bwrap-shim-test-${version}" { }
+    ''
+      mkdir -p "$out/bin"
+      cc -O2 -Wall -Wextra -Werror -std=gnu11 \
+        ${bwrapShimFlags} \
+        -DSHIM_TRACE_ENV='"CHATGPT_BWRAP_SHIM_TRACE"' \
+        -o "$out/bin/bwrap-trace" ${./bwrap-shim.c}
     '';
 
   elfBaseline = ../elf-baseline/${stdenv.hostPlatform.system}.json;
@@ -215,6 +244,7 @@ stdenv.mkDerivation (finalAttrs: {
       --patchelf "${patchelf}/bin/patchelf" \
       --report elf-patch-report.json \
       --require-in-window usr/lib/chatgpt/ChatGPT \
+      --relocate usr/lib/chatgpt/ChatGPT \
       --expect-in-window ${../elf-baseline/interp-window-${stdenv.hostPlatform.system}.json}
 
     echo "--- app.asar must be byte-identical ---"
@@ -236,10 +266,16 @@ stdenv.mkDerivation (finalAttrs: {
     install -Dm444 elf-patch-report.json "$out/share/chatgpt-desktop/elf-patch-report.json"
 
     echo "--- launcher ---"
-    # The resource cache key ties the writable plugin mirror to this exact
-    # build, so a rebuild never reuses a stale copy and an unchanged build
-    # always reuses the same one.
-    resourceKey="${version}-$(sha256sum elf-inventory.json | cut -c1-16)"
+    # Key the writable plugin mirror on this output's own store hash.
+    #
+    # An earlier version keyed it on the *pre-patch* ELF inventory, which is
+    # identical for the same upstream version regardless of what it was built
+    # against. Rebuilding the same version on a different nixpkgs revision
+    # would then reuse a cache whose copied native modules were patched for the
+    # old closure and whose symlinks point into a store path that may since
+    # have been garbage collected. The output hash changes whenever anything
+    # about the build does, which is exactly the property needed here.
+    resourceKey="${version}-$(basename "$out" | cut -c1-32)"
 
     substitute ${../nix/launcher.sh} "$out/bin/chatgpt" \
       --subst-var-by out "$out" \
@@ -304,7 +340,7 @@ stdenv.mkDerivation (finalAttrs: {
   '';
 
   passthru = {
-    inherit bwrapShim sources toolsDir;
+    inherit bwrapShim bwrapShimTest sources toolsDir;
     updateScript = "${toolsDir}/update.py";
   };
 
