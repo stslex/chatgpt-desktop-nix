@@ -16,8 +16,6 @@ pkgs.testers.runNixOSTest {
   name = "chatgpt-desktop-startup";
 
   nodes.machine = { pkgs, ... }: {
-    imports = [ ];
-
     virtualisation = {
       memorySize = 4096;
       diskSize = 8192;
@@ -52,9 +50,6 @@ pkgs.testers.runNixOSTest {
     # to talk to instead of erroring in a way that muddies the log.
     services.gnome.gnome-keyring.enable = true;
     security.pam.services.lightdm.enableGnomeKeyring = true;
-
-    nixpkgs.config.allowUnfreePredicate = pkg:
-      builtins.elem (pkgs.lib.getName pkg) [ "chatgpt-desktop" ];
   };
 
   testScript = ''
@@ -142,11 +137,10 @@ pkgs.testers.runNixOSTest {
     with subtest("the renderer and GPU helpers are alive, not crash-looping"):
         # Count zygote/renderer processes twice; a crash loop shows up as
         # helpers that keep being replaced.
-        first = machine.succeed(
-            "su - alice -c 'pgrep -c -f ChatGPT || true'").strip()
+        # Bracketed so the counting command does not count itself.
+        first = machine.succeed("pgrep -c -f '[C]hatGPT' || true").strip()
         machine.sleep(15)
-        second = machine.succeed(
-            "su - alice -c 'pgrep -c -f ChatGPT || true'").strip()
+        second = machine.succeed("pgrep -c -f '[C]hatGPT' || true").strip()
         machine.log(f"ChatGPT processes: {first} then {second}")
         assert int(second) > 0, "every ChatGPT process exited"
 
@@ -160,7 +154,12 @@ pkgs.testers.runNixOSTest {
             "test -x ${chatgpt}/lib/chatgpt/resources/codex")
 
     with subtest("the app shuts down cleanly"):
-        machine.succeed("su - alice -c 'pkill -f ChatGPT || true'")
+        # The bracket makes the pattern match the app but not this command's
+        # own argv, which otherwise contains the literal string and makes
+        # pkill terminate itself.
+        machine.succeed("pkill -f '[C]hatGPT' || true")
         machine.sleep(5)
+        remaining = machine.succeed("pgrep -c -f '[C]hatGPT' || true").strip()
+        machine.log(f"processes left after shutdown: {remaining}")
   '';
 }
