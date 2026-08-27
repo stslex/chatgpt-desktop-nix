@@ -177,6 +177,23 @@ in
         || { echo "$tool is not on the launcher's own PATH" >&2; exit 1; }
     done
 
+    echo "no exec may carry a redirection that outlives the command"
+    # `exec 9>>"$lock" 2>/dev/null` attaches BOTH redirections to the shell
+    # permanently. The 2>/dev/null then follows the process through the final
+    # exec and discards everything the application ever writes to stderr --
+    # every Chromium warning, every crash message. That is what the launcher
+    # used to do on its normal path, right before starting the app.
+    #
+    # The fix is to wrap the exec in a group, so the redirection applies to the
+    # group: `{ exec 9>>"$lock"; } 2>/dev/null`.
+    if grep -nE '^[^#]*(^|[^{[:alnum:]_])exec [0-9{][^|]*[0-9]>' ${launcher} \
+       | grep -vE '\{ *exec ' | grep -q .; then
+      echo "an exec carries a redirection outside a group:" >&2
+      grep -nE '^[^#]*(^|[^{[:alnum:]_])exec [0-9{][^|]*[0-9]>' ${launcher} \
+        | grep -vE '\{ *exec ' >&2
+      exit 1
+    fi
+
     echo "the namespace gate must still exist and still be called"
     grep -q 'check_user_namespaces()' ${launcher}
     grep -qE '^ *check_user_namespaces$' ${launcher}
@@ -420,9 +437,31 @@ in
     for rel in report["programs"] + report["libraries"]:
         path = root + rel.split("usr/lib/chatgpt", 1)[1]
         out = subprocess.run(["ldd", path], capture_output=True, text=True)
+        # A non-zero exit means ldd did not answer the question, and an
+        # unanswered question is not a pass. A file ldd rejects outright --
+        # "not a dynamic executable", a truncated header, the wrong machine --
+        # produces empty stdout and a diagnostic on stderr, so scanning stdout
+        # alone reported it as resolving cleanly.
+        if out.returncode != 0:
+            detail = (out.stderr or out.stdout).strip().replace("\n", "; ")
+            failures.append(f"{rel}: ldd exited {out.returncode}: {detail}")
+            continue
         for line in out.stdout.splitlines():
             if "not found" in line:
                 failures.append(f"{rel}: {line.strip()}")
+        # ldd can also report trouble on stderr while still exiting 0, so
+        # stderr is examined too -- minus the one warning that is expected
+        # here. Shared objects and Node addons are installed 0444, and ldd
+        # notes the missing execute bit while still resolving them correctly.
+        # That is normal for a library and says nothing about its dependencies.
+        noise = [
+            line for line in out.stderr.splitlines()
+            if line.strip()
+            and "you do not have execution permission" not in line
+        ]
+        if noise:
+            failures.append(f"{rel}: ldd wrote to stderr: "
+                            + "; ".join(l.strip() for l in noise))
     if failures:
         print("unresolved dynamic dependencies:", file=sys.stderr)
         for f in failures:
@@ -664,7 +703,7 @@ in
 
     # Extract the cache functions so we can call them in isolation.
     for fn in publish_plugin_cache collect_unused_caches inuse_lock degrade \
-              cache_is_valid; do
+              cache_is_valid release_cache_locks; do
       sed -n "/^$fn()/,/^}/p" ${launcher} >> lib.sh
     done
     cat > drive.sh <<'SH'
@@ -744,6 +783,55 @@ in
     test -d "$root/keyA"
     test -d "$root/keyB"
     echo "  keyA survived a publish of keyB"
+
+    echo "--- an EMPTIED bundled-plugin tree is caught ---"
+    # The two directories exist and the marker is there; only their contents
+    # are gone. Checking that the paths exist says nothing about that, so this
+    # damage used to be handed straight back to the application.
+    pubE=$(bash drive.sh "$res" "$root" keyEMPTY)
+    chmod -R u+w "$pubE"
+    victim=$(find "$pubE/plugins/openai-bundled/plugins" -maxdepth 1 -mindepth 1 \
+             | head -1)
+    test -n "$victim" || { echo "no bundled plugin to remove" >&2; exit 1; }
+    rm -rf "$victim"
+    test -d "$pubE/plugins/openai-bundled/plugins"   # still there, still stamped
+    test -e "$pubE/.complete"
+    againE=$(bash drive.sh "$res" "$root" keyEMPTY)
+    test -e "$victim" \
+      || { echo "an emptied bundled-plugin tree was handed back" >&2; exit 1; }
+    echo "  missing bundled plugin detected and rebuilt"
+
+    echo "--- a damaged cache IN USE is not destroyed under the running app ---"
+    # The build lock serialises builders. A running instance is not a builder:
+    # it holds the in-use lock, shared, for its whole lifetime. Destroying the
+    # entry without asking that lock deletes the resources of a running
+    # application.
+    pubU=$(bash drive.sh "$res" "$root" keyUSE)
+    chmod -R u+w "$pubU"
+    canary="$pubU/plugins/CANARY"; : > "$canary"
+    rm -f "$pubU/app.asar"                       # make it invalid
+    lockfile="$(bash -c 'source ./lib.sh; inuse_lock "$1" "$2"' _ "$root" keyUSE)"
+    : >> "$lockfile"
+    exec {hold}>>"$lockfile"
+    flock --shared --nonblock "$hold" \
+      || { echo "could not take the in-use lock" >&2; exit 1; }
+    outU=$(bash drive.sh "$res" "$root" keyUSE 2>err.txt)
+    test -e "$canary" \
+      || { echo "the cache was destroyed while another instance held it" >&2
+           cat err.txt >&2; exit 1; }
+    grep -q 'another instance is using it' err.txt \
+      || { echo "no diagnostic explaining the refusal:" >&2; cat err.txt >&2; exit 1; }
+    test "$outU" = "$res" \
+      || { echo "expected a fall back to the store resources, got $outU" >&2; exit 1; }
+    echo "  refused to destroy it, fell back to the read-only store copy"
+
+    echo "--- and once nothing holds it, the same cache IS rebuilt ---"
+    exec {hold}>&-
+    againU=$(bash drive.sh "$res" "$root" keyUSE)
+    test "$againU" = "$root/keyUSE"
+    test -e "$againU/app.asar"
+    test ! -e "$canary"
+    echo "  rebuilt after the holder released the lock"
 
     echo "--- another key's staging directory is left alone ---"
     # Staging cleanup runs under this key's build lock only, so it has no

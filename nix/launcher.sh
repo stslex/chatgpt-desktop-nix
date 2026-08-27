@@ -136,6 +136,43 @@ cache_is_valid() {
         [[ "$base" == "plugins" ]] && continue
         [[ -e "$dir/$base" ]] || return 1
     done
+    # And the plugins that were copied must still be there.
+    #
+    # Checking only that the two directories above exist says nothing about
+    # what is inside them: an emptied or half-deleted bundled-plugin tree
+    # satisfied every test here while being exactly the damage this function is
+    # supposed to catch. Compare against the source, which is the definition of
+    # what a complete copy contains.
+    local src="$resources/plugins/openai-bundled/plugins"
+    if [[ -d "$src" ]]; then
+        for entry in "$src"/*; do
+            [[ -e "$entry" ]] || continue          # nothing matched the glob
+            base="$(basename "$entry")"
+            [[ -e "$dir/plugins/openai-bundled/plugins/$base" ]] || return 1
+        done
+    fi
+    return 0
+}
+
+# Close whichever of the two locks publish_plugin_cache is holding.
+#
+# Bash scoping is dynamic, so this sees that function's locals. Having one
+# place to do it matters because there are now two descriptors and eight exits,
+# and leaking the exclusive in-use lock would make every later launch think the
+# cache is busy forever.
+release_cache_locks() {
+    # Each `exec` is wrapped in a group so its redirection applies to the
+    # group and not to this shell. `exec ... 2>/dev/null` on its own would
+    # redirect the shell's stderr permanently -- silencing every later warning
+    # and, past the final exec, the application's own diagnostics.
+    if [[ -n "${destroy_fd:-}" ]]; then
+        { exec {destroy_fd}>&-; } 2>/dev/null || true
+        destroy_fd=""
+    fi
+    if [[ -n "${lock_fd:-}" ]]; then
+        { exec {lock_fd}>&-; } 2>/dev/null || true
+        lock_fd=""
+    fi
     return 0
 }
 
@@ -143,6 +180,7 @@ publish_plugin_cache() {
     local resources="$1" cache_root="$2" key="$3"
     local final="$cache_root/$key"
     local stamp="$final/.complete"
+    local destroy_fd=""
 
     if cache_is_valid "$final" "$resources"; then
         printf '%s' "$final"
@@ -163,7 +201,7 @@ publish_plugin_cache() {
     }
 
     if ! flock --exclusive --timeout 120 "$lock_fd"; then
-        exec {lock_fd}>&-
+        release_cache_locks
         degrade "timed out waiting for another instance to build the plugin cache" "$resources"
         return 0
     fi
@@ -171,7 +209,7 @@ publish_plugin_cache() {
     # Re-check under the lock: another launch may have finished while we
     # waited, and it may equally have published something damaged.
     if cache_is_valid "$final" "$resources"; then
-        exec {lock_fd}>&-
+        release_cache_locks
         printf '%s' "$final"
         return 0
     fi
@@ -179,15 +217,36 @@ publish_plugin_cache() {
     # Anything else -- no marker, or a marker over a tree that no longer holds
     # what it should -- is rebuilt from scratch under this lock rather than
     # trusted.
+    #
+    # But rebuilding means deleting, and this entry may be the resources of an
+    # application that is running right now. The build lock does not say
+    # otherwise: it serialises builders, and a running instance is not a
+    # builder -- it holds the *in-use* lock, shared, for its whole lifetime.
+    # So ask that lock before destroying anything. An exclusive non-blocking
+    # acquisition succeeds only if nobody holds it.
     if [[ -e "$final" ]]; then
-        warn "discarding an incomplete or damaged plugin cache at $final"
-        chmod -R u+w "$final" 2>/dev/null || true
-        rm -rf "$final"
+        local inuse; inuse="$(inuse_lock "$cache_root" "$key")"
+        local destroy_fd=""
+        if : >> "$inuse" 2>/dev/null \
+                && { exec {destroy_fd}>>"$inuse"; } 2>/dev/null \
+                && flock --exclusive --nonblock "$destroy_fd" 2>/dev/null; then
+            warn "discarding an incomplete or damaged plugin cache at $final"
+            chmod -R u+w "$final" 2>/dev/null || true
+            rm -rf "$final"
+            # Kept for the rebuild below, so a launch starting now cannot claim
+            # the entry while it is being replaced.
+        else
+            release_cache_locks
+            degrade \
+                "the plugin cache at $final is damaged, but another instance is using it" \
+                "$resources"
+            return 0
+        fi
     fi
 
     local staging
     staging="$(mktemp -d "$cache_root/.staging-$key.XXXXXX")" || {
-        exec {lock_fd}>&-
+        release_cache_locks
         degrade "cannot create a staging directory" "$resources"
         return 0
     }
@@ -212,7 +271,7 @@ publish_plugin_cache() {
 
     if (( ! ok )); then
         rm -rf "$staging"
-        exec {lock_fd}>&-
+        release_cache_locks
         degrade "could not stage the plugin cache" "$resources"
         return 0
     fi
@@ -224,7 +283,7 @@ publish_plugin_cache() {
     if ! sync "$staging" || ! : > "$staging/.complete" \
             || ! sync "$staging/.complete"; then
         rm -rf "$staging"
-        exec {lock_fd}>&-
+        release_cache_locks
         degrade "could not flush the staged plugin cache to disk" "$resources"
         return 0
     fi
@@ -234,7 +293,7 @@ publish_plugin_cache() {
         # valid cache is now there, use it; otherwise fall back.
         rm -rf "$staging"
         if ! cache_is_valid "$final" "$resources"; then
-            exec {lock_fd}>&-
+            release_cache_locks
             degrade "could not publish the plugin cache" "$resources"
             return 0
         fi
@@ -242,7 +301,7 @@ publish_plugin_cache() {
 
     collect_unused_caches "$cache_root" "$key"
 
-    exec {lock_fd}>&-
+    release_cache_locks
     printf '%s' "$final"
 }
 
@@ -441,7 +500,11 @@ fi
 if [[ "$resources_path" != "@out@/lib/chatgpt/resources" ]]; then
     lock_path="$(inuse_lock "$cache_root" "@resourceKey@")"
     held=0
-    if : >> "$lock_path" 2>/dev/null && exec 9>>"$lock_path" 2>/dev/null; then
+    # The braces matter. `exec 9>>"$lock_path" 2>/dev/null` attaches BOTH
+    # redirections to this shell permanently, so the 2>/dev/null would follow
+    # the process through the final exec below and discard every diagnostic the
+    # application ever writes -- every Chromium warning, every crash message.
+    if : >> "$lock_path" 2>/dev/null && { exec 9>>"$lock_path"; } 2>/dev/null; then
         if flock --shared --nonblock 9 2>/dev/null; then
             held=1
         fi
