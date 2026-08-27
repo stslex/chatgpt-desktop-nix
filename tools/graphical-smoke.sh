@@ -54,8 +54,18 @@ xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" \
 
         exit $(( mapped ? 0 : 1 ))
     ' _ "$launcher" "$log" || {
-        echo "no window appeared within 90s; last 60 log lines:" >&2
-        tail -60 "$log" >&2
+        echo "the application did not map a window" >&2
+        if [[ -s "$log" ]]; then
+            echo "--- last 60 log lines ---" >&2
+            tail -60 "$log" >&2
+        else
+            # Chromium dying in its zygote produces no output at all, so an
+            # empty log is itself the diagnosis rather than a missing one.
+            echo "--- the application produced no output ---" >&2
+            echo "That usually means Chromium's zygote could not start." >&2
+            echo "user.max_user_namespaces = $(cat /proc/sys/user/max_user_namespaces 2>/dev/null || echo '?')" >&2
+            echo "apparmor_restrict_unprivileged_userns = $(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 'n/a')" >&2
+        fi
         exit 1
     }
 

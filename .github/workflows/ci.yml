@@ -200,6 +200,28 @@ jobs:
       - name: Bounded graphical startup under Xvfb
         run: |
           set -eu
+          # Chromium's sandbox needs unprivileged user namespaces, and this
+          # package deliberately has no way to turn that sandbox off. Ubuntu
+          # 24.04 restricts them through AppArmor by default, which makes the
+          # zygote die with SIGTRAP and no output at all.
+          #
+          # Lift the restriction if we are allowed to, then actually probe it.
+          # If the probe fails, the runner cannot host this test: skip it and
+          # say so, rather than reporting a red build for a property of the
+          # runner. The NixOS VM job covers the same ground with namespaces
+          # genuinely available, and the native launcher step above has already
+          # run the real binary on this architecture.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 \
+            >/dev/null 2>&1 || true
+
+          if ! unshare --user --map-root-user true 2>/dev/null; then
+            echo "::notice title=Graphical smoke skipped::this runner does not" \
+                 "permit unprivileged user namespaces, which Chromium's" \
+                 "sandbox requires; covered by the NixOS VM job instead"
+            exit 0
+          fi
+          echo "unprivileged user namespaces are available"
+
           out=$(nix build .#chatgpt --no-link --print-out-paths)
           nix shell nixpkgs#xvfb-run nixpkgs#xdotool nixpkgs#procps \
             --command bash tools/graphical-smoke.sh "$out" \
