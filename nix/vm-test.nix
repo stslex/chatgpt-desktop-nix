@@ -260,6 +260,57 @@ pkgs.testers.runNixOSTest {
             f"su - alice -c 'PATH={shim_dir}:$PATH command -v bwrap'").strip()
         assert which.startswith("${chatgpt.bwrapShim}"), which
 
+    with subtest("the real `codex sandbox` path is bridged end to end"):
+        # Everything above drives bwrap directly with a Codex-shaped argv.
+        # This drives the bundled Codex binary's own sandbox command, which is
+        # what actually runs on a user's machine: Codex resolves "bwrap"
+        # through PATH itself, builds its own argv, and executes the command
+        # inside. Three runs, because only the contrast proves anything.
+        #
+        # (The subcommand is `codex sandbox <command>`. There is no
+        # `codex sandbox linux` -- that parses as the command "linux".)
+        codex = "${chatgpt}/lib/chatgpt/resources/codex"
+        probe = "${genericBinary}/bin/probe"
+        base = "${pkgs.coreutils}/bin"
+        real = "${pkgs.bubblewrap}/bin"
+
+        # 1. With no bwrap on PATH at all, Codex must fail for exactly the
+        #    stated reason. This pins PATH lookup as the mechanism the whole
+        #    bridge depends on: Codex also looks for a bundled
+        #    codex-resources/bwrap next to itself, and if a future release
+        #    shipped one, the shim could be bypassed silently.
+        rc, out = machine.execute(
+            f"su - alice -c 'PATH={base} {codex} sandbox {probe}' 2>&1")
+        machine.log(f"codex sandbox, no bwrap: rc={rc} {out.strip()[:200]}")
+        assert "bubblewrap is unavailable" in out, (
+            f"Codex did not resolve bwrap through PATH, so the bridge's "
+            f"mechanism is not what this package assumes (rc={rc}):\n{out}"
+        )
+
+        # 2. With the real bwrap on PATH the sandbox starts, but the generic
+        #    binary still cannot: stub-ld provides no NIX_LD. If this ever
+        #    succeeds, step 3 proves nothing.
+        rc, out = machine.execute(
+            f"su - alice -c 'PATH={real}:{base} {codex} sandbox {probe}' 2>&1")
+        machine.log(f"codex sandbox, real bwrap: rc={rc} {out.strip()[:200]}")
+        assert "GENERIC-BINARY-RAN-OK" not in out, (
+            f"the generic binary ran under the unmodified bwrap, so this VM "
+            f"already provides a working generic loader and the next "
+            f"assertion would be vacuous:\n{out}"
+        )
+
+        # 3. Same Codex, same subcommand, same binary -- with the shim ahead
+        #    on PATH, exactly as the launcher arranges on a NixOS host.
+        shim_dir = "${chatgpt.bwrapShim}/bin"
+        rc, out = machine.execute(
+            f"su - alice -c 'PATH={shim_dir}:{real}:{base} "
+            f"{codex} sandbox {probe}' 2>&1")
+        machine.log(f"codex sandbox, shim: rc={rc} {out.strip()[:200]}")
+        assert "GENERIC-BINARY-RAN-OK" in out, (
+            f"the generic binary did not run through the real Codex sandbox "
+            f"path with the bridge in place (rc={rc}):\n{out}"
+        )
+
     with subtest("the launcher puts the shim ahead of the real bwrap"):
         # The launcher is what arranges this on a NixOS host, and it only does
         # so when /etc/NIXOS exists -- which it does here.

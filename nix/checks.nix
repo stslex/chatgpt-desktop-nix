@@ -219,6 +219,46 @@ in
     echo "launcher runs with an empty environment"
   '';
 
+  # The bwrap bridge works by putting our shim ahead of the real bubblewrap on
+  # PATH, and that only works because Codex resolves bwrap through PATH. Its own
+  # diagnostic names the alternative it checks:
+  #
+  #   "bubblewrap is unavailable: no system bwrap was found on PATH and no
+  #    bundled codex-resources/bwrap binary was found next to the Codex
+  #    executable"
+  #
+  # There is no such bundled binary in this payload today. If a future upstream
+  # release ships one, Codex may stop consulting PATH -- and the bridge would be
+  # bypassed silently, with everything still appearing to work until someone ran
+  # a downloaded toolchain. Fail the build instead, so it is a packaging
+  # decision rather than a surprise.
+  no-bundled-bwrap = check "no-bundled-bwrap" [ pkgs.coreutils ] ''
+    echo "the payload must not ship its own bwrap next to Codex"
+    found=$(find ${app} -name 'bwrap' -o -name 'bwrap.*' 2>/dev/null || true)
+    if [ -n "$found" ]; then
+      echo "upstream now bundles a bwrap:" >&2
+      echo "$found" >&2
+      echo "" >&2
+      echo "Codex prefers a bundled codex-resources/bwrap over PATH, so the" >&2
+      echo "shim in nix/bwrap-shim.c may no longer be reached. Re-check how" >&2
+      echo "Codex chooses between them before releasing this version." >&2
+      exit 1
+    fi
+    if [ -e ${app}/resources/codex-resources ]; then
+      echo "a codex-resources directory appeared; inspect it for a bwrap" >&2
+      ls -la ${app}/resources/codex-resources >&2
+      exit 1
+    fi
+    echo "no bundled bwrap; the PATH shim is still the mechanism"
+
+    echo "and Codex must still say it looks on PATH"
+    if ! grep -qa 'no system bwrap was found on PATH' ${app}/resources/codex; then
+      echo "the bundled Codex no longer contains the PATH-lookup diagnostic;" >&2
+      echo "its bwrap resolution may have changed." >&2
+      exit 1
+    fi
+  '';
+
   # --- payload integrity --------------------------------------------------
 
   asar-identity = check "asar-identity" [ pkgs.python3 pkgs.dpkg pkgs.curl ] ''

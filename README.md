@@ -120,10 +120,29 @@ package deliberately provides no way to turn the sandbox off. If they are
 disabled the launcher stops with an actionable message rather than starting
 insecurely.
 
-On NixOS they are enabled by default. If you have changed that:
+The launcher does not read sysctls to decide this. It tries to create a
+namespace, because reading `/proc/sys/...` covers two of the ways they can be
+denied and none of the others: Ubuntu restricts them through AppArmor, a
+container may drop the capability, seccomp may block the syscall. In each of
+those the sysctls look fine and Chromium's zygote still dies with `SIGTRAP` and
+no output.
+
+`--version` and `--help` are exempt, and only those, and only as the sole
+argument. Electron answers them in the browser process before any renderer
+exists, so they do not depend on the sandbox; refusing them would protect
+nothing while breaking packaging checks, container builds and CI. Every other
+invocation goes through the check.
+
+On NixOS namespaces are enabled by default. If you have changed that:
 
 ```nix
 boot.kernel.sysctl."user.max_user_namespaces" = 28633;
+```
+
+On a Debian or Ubuntu host, AppArmor is the usual cause:
+
+```sh
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 ```
 
 For login to persist across restarts you need a Secret Service provider — GNOME
@@ -340,9 +359,24 @@ truncated one, or `--args FD` whose options come from a file descriptor it
 cannot read — it execs the real `bwrap` with the argument vector untouched.
 Losing the bridge degrades a feature; guessing wrong would corrupt the sandbox.
 
-The VM test proves this end to end on a host with only the default stub: the
-same generic binary exits 127 without the bridge and prints its output through
-it.
+The VM test proves this end to end on a host with only the default stub, and it
+does so through the bundled Codex binary's own `codex sandbox <command>`, not
+just by calling `bwrap` with a Codex-shaped argument vector. Three runs, because
+only the contrast means anything:
+
+| `PATH` contains | result |
+| --- | --- |
+| no `bwrap` at all | Codex fails with *bubblewrap is unavailable: no system bwrap was found on PATH…* |
+| the real `bwrap` | the sandbox starts; the generic binary still cannot run |
+| the shim, then the real `bwrap` | the generic binary runs and prints its output |
+
+The first row is load-bearing. It is what pins `PATH` lookup as the mechanism
+this bridge depends on: Codex's own diagnostic says it also looks for a bundled
+`codex-resources/bwrap` next to the Codex executable. No such binary exists in
+this payload, and the `no-bundled-bwrap` check fails the build if one ever
+appears — because Codex might then stop consulting `PATH`, which would bypass
+the shim silently, with everything looking fine until someone actually ran a
+downloaded toolchain.
 
 ## The automatic updater
 
