@@ -317,6 +317,32 @@ class TestRefEncoding(unittest.TestCase):
             with self.subTest(branch=branch):
                 self.assertFalse(C.AUTOMATION_BRANCH.match(branch))
 
+    def test_the_encoding_stays_injective_under_brute_force(self):
+        # The '..', '.lock' and trailing-dot rules rewrite characters that were
+        # literal in the input, so each one is a chance to make two different
+        # versions land on the same ref. Injectivity is what stops two upstream
+        # versions sharing an automation branch, where the second would be
+        # compared against -- and force-pushed over -- the first one's record.
+        import itertools
+        seen: dict[str, str] = {}
+        checked = 0
+        for length in range(1, 5):
+            for tup in itertools.product("0.9a~:+", repeat=length):
+                version = "0" + "".join(tup)
+                try:
+                    T.validate_version(version)
+                except T.TrustError:
+                    continue
+                encoded = T.encode_version_for_ref(version)
+                checked += 1
+                self.assertNotIn(
+                    encoded, seen,
+                    f"{version!r} and {seen.get(encoded)!r} both encode to "
+                    f"{encoded!r}")
+                seen[encoded] = version
+                self.assertEqual(T.decode_version_from_ref(encoded), version)
+        self.assertGreater(checked, 1000, "the sweep covered too little")
+
     def test_an_implausible_version_is_refused_before_encoding(self):
         for bad in ["", "../etc", "a1.0", "1.0 2"]:
             with self.subTest(bad=bad), self.assertRaises(T.TrustError):
