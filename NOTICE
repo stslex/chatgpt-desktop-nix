@@ -1,0 +1,26 @@
+chatgpt-desktop-nix
+===================
+
+Packaging code: Copyright (c) 2026 stslex, MIT licensed (see LICENSE).
+
+This repository packages, but does not redistribute, ChatGPT Desktop by
+OpenAI. The application is fetched at build time from OpenAI's official signed
+APT repository at https://persistent.oaistatic.com/codex-app-prod/linux/deb and
+remains subject to OpenAI's terms. No OpenAI binary is committed to this
+repository, attached to any release, or published to any binary cache.
+
+The bundled Electron runtime inside that package is Copyright (c) Electron
+contributors and Copyright (c) 2013-2020 GitHub Inc., MIT licensed; the
+upstream copyright file is installed at
+share/doc/chatgpt-desktop/upstream-copyright.
+
+trust/openai-chatgpt-archive-keyring.gpg is OpenAI's public APT signing key,
+extracted from the official package. See trust/KEY-PROVENANCE.md.
+
+Prior art consulted while designing this package — no code was copied from any
+of them; all implementation here is original:
+
+  * https://github.com/ilysenko/codex-desktop-linux
+  * https://github.com/numtide/llm-agents.nix
+  * https://github.com/NixOS/nixpkgs/pull/551713
+  * https://github.com/stslex/claude-desktop-nix (same author)

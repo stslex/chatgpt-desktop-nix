@@ -1,0 +1,352 @@
+"""Tests for the updater's refusal policy.
+
+These cover the decisions the updater makes *after* the signed chain has
+already succeeded: whether a verified candidate is actually allowed to replace
+what is committed. A perfectly valid signature is not sufficient — a signed
+downgrade or a signed re-issue of a known version under different bytes must
+still be refused and sent to a human.
+"""
+
+from __future__ import annotations
+
+import unittest
+
+import apt_trust as T
+import update as U
+
+
+def sources(version: str, amd_sha: str = "a" * 64, arm_sha: str = "b" * 64,
+            amd_size: int = 100, arm_size: int = 200) -> dict:
+    return {
+        "version": version,
+        "architectures": {
+            "amd64": {
+                "filename": f"pool/main/c/chatgpt/chatgpt_{version}_amd64.deb",
+                "sha256": amd_sha,
+                "size": amd_size,
+            },
+            "arm64": {
+                "filename": f"pool/main/c/chatgpt/chatgpt_{version}_arm64.deb",
+                "sha256": arm_sha,
+                "size": arm_size,
+            },
+        },
+    }
+
+
+class TestDowngrade(unittest.TestCase):
+    def test_allows_a_newer_version(self):
+        U.guard_downgrade(sources("26.820.60940"), sources("26.820.71523"))
+
+    def test_refuses_an_older_version(self):
+        with self.assertRaises(T.TrustError) as ctx:
+            U.guard_downgrade(sources("26.820.71523"), sources("26.820.60940"))
+        self.assertIn("refusing a downgrade", str(ctx.exception))
+
+    def test_refuses_a_numerically_older_version_that_sorts_higher(self):
+        # "26.820.9" > "26.820.71523" lexically but is an older release.
+        with self.assertRaises(T.TrustError):
+            U.guard_downgrade(sources("26.820.71523"), sources("26.820.9"))
+
+    def test_first_run_has_nothing_to_compare(self):
+        U.guard_downgrade({}, sources("26.820.71523"))
+
+
+class TestSameVersionDrift(unittest.TestCase):
+    def test_identical_metadata_is_fine(self):
+        current = sources("26.820.71523")
+        U.guard_same_version_drift(current, current)
+
+    def test_refuses_a_changed_digest_for_a_known_version(self):
+        old = sources("26.820.71523", amd_sha="a" * 64)
+        new = sources("26.820.71523", amd_sha="c" * 64)
+        with self.assertRaises(T.TrustError) as ctx:
+            U.guard_same_version_drift(old, new)
+        self.assertIn("same-version digest drift", str(ctx.exception))
+        self.assertIn("manual engineering review", str(ctx.exception))
+
+    def test_refuses_a_changed_size_for_a_known_version(self):
+        old = sources("26.820.71523", amd_size=100)
+        new = sources("26.820.71523", amd_size=101)
+        with self.assertRaises(T.TrustError):
+            U.guard_same_version_drift(old, new)
+
+    def test_refuses_a_changed_filename_for_a_known_version(self):
+        old = sources("26.820.71523")
+        new = sources("26.820.71523")
+        new["architectures"]["arm64"]["filename"] = "pool/main/c/chatgpt/other.deb"
+        with self.assertRaises(T.TrustError):
+            U.guard_same_version_drift(old, new)
+
+    def test_a_new_version_may_have_any_digest(self):
+        old = sources("26.820.60940", amd_sha="a" * 64)
+        new = sources("26.820.71523", amd_sha="f" * 64)
+        U.guard_same_version_drift(old, new)
+
+    def test_refuses_a_new_architecture_appearing_under_a_known_version(self):
+        old = sources("26.820.71523")
+        del old["architectures"]["arm64"]
+        new = sources("26.820.71523")
+        with self.assertRaises(T.TrustError) as ctx:
+            U.guard_same_version_drift(old, new)
+        self.assertIn("structural change", str(ctx.exception))
+
+
+class TestRenderedMetadataIsDeterministic(unittest.TestCase):
+    def test_same_input_produces_identical_output(self):
+        records = {
+            arch: T.PackageRecord(
+                package="chatgpt", version="26.820.71523", architecture=arch,
+                filename=f"pool/main/c/chatgpt/chatgpt_26.820.71523_{arch}.deb",
+                size=123, sha256="a" * 64,
+            )
+            for arch in ("amd64", "arm64")
+        }
+        release = T.VerifiedRelease(version="26.820.71523", records=records)
+        first = U.render_sources(release)
+        second = U.render_sources(release)
+        self.assertEqual(first, second)
+        # Architecture order must be stable regardless of dict insertion order.
+        self.assertEqual(list(first["architectures"]), ["amd64", "arm64"])
+        self.assertEqual(
+            first["architectures"]["amd64"]["hash"], T.sha256_to_sri("a" * 64))
+
+
+class TestCommittedSourcesMatchTheRealRelease(unittest.TestCase):
+    """The committed sources.json must be internally consistent."""
+
+    def setUp(self):
+        import json
+        import os
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "sources.json"), encoding="utf-8") as fh:
+            self.sources = json.load(fh)
+
+    def test_origin_and_key_are_the_pinned_ones(self):
+        self.assertEqual(self.sources["origin"], T.APT_ORIGIN)
+        self.assertEqual(self.sources["suite"], T.APT_SUITE)
+        self.assertEqual(self.sources["component"], T.APT_COMPONENT)
+        self.assertEqual(self.sources["package"], T.PACKAGE_NAME)
+        self.assertEqual(self.sources["signingKeyFingerprint"],
+                         T.EXPECTED_KEY_FINGERPRINT)
+
+    def test_every_architecture_is_self_consistent(self):
+        version = self.sources["version"]
+        T.validate_version(version)
+        self.assertEqual(set(self.sources["architectures"]),
+                         set(T.SUPPORTED_ARCHITECTURES))
+        for arch, entry in self.sources["architectures"].items():
+            with self.subTest(arch=arch):
+                T.sanitize_filename(entry["filename"])
+                self.assertIn(version, entry["filename"])
+                self.assertTrue(entry["url"].endswith(entry["filename"]))
+                self.assertTrue(entry["url"].startswith(T.APT_ORIGIN + "/"))
+                self.assertEqual(entry["hash"], T.sha256_to_sri(entry["sha256"]))
+                self.assertGreater(entry["size"], 1_000_000)
+                self.assertEqual(entry["debianArchitecture"], arch)
+
+
+
+class TestObservedCandidateDrift(unittest.TestCase):
+    """Drift must be caught against the recorded candidate, not just main.
+
+    main holds V1. The updater opens a V2 pull request pinning digest A. That
+    pull request fails CI and stays open. Upstream then republishes V2 with
+    digest B. Comparing only against main sees a normal V1 -> V2 upgrade, and
+    the same-version republish that is supposed to require review is accepted.
+    """
+
+    def test_the_v1_main_v2a_pr_v2b_rerun_sequence_is_refused(self):
+        main = sources("26.820.60940", amd_sha="1" * 64, arm_sha="2" * 64)
+        recorded = sources("26.820.71523", amd_sha="a" * 64, arm_sha="b" * 64)
+        republished = sources("26.820.71523", amd_sha="c" * 64, arm_sha="b" * 64)
+
+        # Against main alone this looks like an ordinary upgrade.
+        U.guard_downgrade(main, republished)
+        U.guard_same_version_drift(main, republished)
+
+        # Against the recorded candidate it is a same-version republish.
+        with self.assertRaises(T.TrustError) as ctx:
+            U.guard_observed_candidate(recorded, republished)
+        message = str(ctx.exception)
+        self.assertIn("republished", message)
+        self.assertIn("amd64.sha256", message)
+        self.assertIn("manual-review", message)
+
+    def test_an_identical_recorded_candidate_is_accepted(self):
+        recorded = sources("26.820.71523")
+        U.guard_observed_candidate(recorded, sources("26.820.71523"))
+
+    def test_a_size_or_filename_change_is_also_caught(self):
+        recorded = sources("26.820.71523", amd_size=100)
+        with self.assertRaises(T.TrustError):
+            U.guard_observed_candidate(recorded, sources("26.820.71523", amd_size=101))
+
+    def test_a_stale_branch_for_another_version_is_ignored(self):
+        recorded = sources("26.820.60940", amd_sha="a" * 64)
+        U.guard_observed_candidate(recorded, sources("26.820.71523", amd_sha="f" * 64))
+
+    def test_no_recorded_candidate_is_not_an_error(self):
+        U.guard_observed_candidate({}, sources("26.820.71523"))
+
+
+class TestVerificationOrder(unittest.TestCase):
+    """The package bodies must be verified before the no-op decision."""
+
+    def test_update_py_has_no_skip_verification_escape(self):
+        import inspect
+        source = inspect.getsource(U)
+        self.assertNotIn("skip_deb_verification", source,
+                         "a flag that skips .deb verification must not exist "
+                         "on any path that can write sources.json")
+
+    def test_verify_debs_precedes_the_already_current_return(self):
+        import inspect
+        source = inspect.getsource(U.main)
+        verify_at = source.index("verify_debs(release, workdir)")
+        noop_at = source.index("if previous == candidate:")
+        self.assertLess(
+            verify_at, noop_at,
+            "the 'already current' early return happens before the package "
+            "bodies are verified, so a successful scheduled no-op would prove "
+            "nothing about the artefacts",
+        )
+
+
+class TestRefEncoding(unittest.TestCase):
+    """Branch and tag names must distinguish versions that differ.
+
+    Replacing unsafe characters with '-' is lossy, and Debian versions differ
+    in exactly those characters: `1.0~rc1`, `1.0-rc1`, `1.0+rc1` and `1.0:rc1`
+    all collapsed to one string. Two upstream versions would then share one
+    automation branch, and the second would be force-pushed over the first's
+    record.
+    """
+
+    COLLIDING = ["1.0~rc1", "1.0-rc1", "1.0+rc1", "1.0:rc1", "2:1.0", "2-1.0"]
+
+    def test_the_old_scheme_really_did_collide(self):
+        import re
+        lossy = {re.sub(r"[^A-Za-z0-9._-]", "-", v) for v in self.COLLIDING}
+        self.assertLess(len(lossy), len(self.COLLIDING),
+                        "fixture no longer demonstrates the collision")
+
+    def test_the_encoding_is_injective(self):
+        encoded = [T.encode_version_for_ref(v) for v in self.COLLIDING]
+        self.assertEqual(len(set(encoded)), len(self.COLLIDING))
+
+    def test_it_round_trips(self):
+        for version in self.COLLIDING + ["26.820.71523", "1.0+dfsg", "1.0-2"]:
+            with self.subTest(version=version):
+                self.assertEqual(
+                    T.decode_version_from_ref(T.encode_version_for_ref(version)),
+                    version)
+
+    def test_every_character_VERSION_RE_admits_round_trips(self):
+        import string
+        version = "0" + string.ascii_letters + string.digits + ".+~:-"
+        T.validate_version(version)
+        self.assertEqual(
+            T.decode_version_from_ref(T.encode_version_for_ref(version)),
+            version)
+
+    def test_the_result_is_a_valid_git_ref_component(self):
+        import shutil
+        import subprocess
+        if not shutil.which("git"):
+            self.skipTest("git is unavailable")
+        for version in self.COLLIDING + ["26.820.71523"]:
+            with self.subTest(version=version):
+                ref = "automation/chatgpt-" + T.encode_version_for_ref(version)
+                self.assertEqual(
+                    subprocess.run(
+                        ["git", "check-ref-format", "--allow-onelevel", ref],
+                        capture_output=True).returncode,
+                    0, f"{ref} is not a valid git ref")
+
+    def test_dot_sequences_and_lock_suffixes_are_handled(self):
+        # ".." is illegal in a ref component and ".lock" is reserved.
+        self.assertNotIn("..", T.encode_version_for_ref("1..0"))
+        self.assertFalse(T.encode_version_for_ref("1.lock").endswith(".lock"))
+
+    #: Versions whose encodings previously broke something. Debian revisions,
+    #: epochs, tildes and pluses are ordinary upstream syntax, not exotica.
+    AWKWARD = ["26.820.71523", "26.820.71523-1", "1.2.3~rc1", "1:2.3",
+               "1.2+b1", "1.2.", "1.0.", "1..0", "1.lock", "1.0.lock"]
+
+    def test_every_encoded_version_is_a_valid_branch_and_tag_ref(self):
+        # The automation branch puts the encoded version LAST, so a trailing
+        # '.' makes the whole ref invalid -- `git check-ref-format` rejects
+        # `refs/heads/automation/chatgpt-1.2.` -- and the updater's push fails
+        # with nothing having gone wrong upstream. --allow-onelevel is not used
+        # here: these are the real, fully-qualified refs.
+        import shutil
+        import subprocess
+        if not shutil.which("git"):
+            self.skipTest("git is unavailable")
+        for version in self.AWKWARD + self.COLLIDING:
+            encoded = T.encode_version_for_ref(version)
+            for ref in (f"refs/heads/automation/chatgpt-{encoded}",
+                        f"refs/tags/chatgpt-{encoded}-nix1"):
+                with self.subTest(version=version, ref=ref):
+                    self.assertEqual(
+                        subprocess.run(["git", "check-ref-format", ref],
+                                       capture_output=True).returncode,
+                        0, f"{ref} is not a valid git ref")
+
+    def test_the_changed_file_policy_recognises_every_real_branch_name(self):
+        # If these drift apart the failure is silent and one-directional: a
+        # branch the policy does not recognise is treated as an ordinary human
+        # pull request, and the sources.json-only rule is skipped for a change
+        # that merges without review. That is how '%' came to be missing from
+        # the pattern.
+        import check_changed_files as C
+        for version in self.AWKWARD + self.COLLIDING:
+            branch = "automation/chatgpt-" + T.encode_version_for_ref(version)
+            with self.subTest(version=version, branch=branch):
+                self.assertTrue(
+                    C.AUTOMATION_BRANCH.match(branch),
+                    f"{branch} is a real automation branch the policy would "
+                    f"skip")
+
+    def test_the_changed_file_policy_still_rejects_other_branches(self):
+        import check_changed_files as C
+        for branch in ["main", "feat/x", "automation/chatgpt-",
+                       "automation/chatgpt-a b", "automation/chatgpt-%zz",
+                       "automation/chatgpt-x/y", "xautomation/chatgpt-1.0"]:
+            with self.subTest(branch=branch):
+                self.assertFalse(C.AUTOMATION_BRANCH.match(branch))
+
+    def test_the_encoding_stays_injective_under_brute_force(self):
+        # The '..', '.lock' and trailing-dot rules rewrite characters that were
+        # literal in the input, so each one is a chance to make two different
+        # versions land on the same ref. Injectivity is what stops two upstream
+        # versions sharing an automation branch, where the second would be
+        # compared against -- and force-pushed over -- the first one's record.
+        import itertools
+        seen: dict[str, str] = {}
+        checked = 0
+        for length in range(1, 5):
+            for tup in itertools.product("0.9a~:+", repeat=length):
+                version = "0" + "".join(tup)
+                try:
+                    T.validate_version(version)
+                except T.TrustError:
+                    continue
+                encoded = T.encode_version_for_ref(version)
+                checked += 1
+                self.assertNotIn(
+                    encoded, seen,
+                    f"{version!r} and {seen.get(encoded)!r} both encode to "
+                    f"{encoded!r}")
+                seen[encoded] = version
+                self.assertEqual(T.decode_version_from_ref(encoded), version)
+        self.assertGreater(checked, 1000, "the sweep covered too little")
+
+    def test_an_implausible_version_is_refused_before_encoding(self):
+        for bad in ["", "../etc", "a1.0", "1.0 2"]:
+            with self.subTest(bad=bad), self.assertRaises(T.TrustError):
+                T.encode_version_for_ref(bad)
+
+if __name__ == "__main__":
+    unittest.main()

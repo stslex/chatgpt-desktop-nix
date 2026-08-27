@@ -1,0 +1,518 @@
+name: CI
+
+# Runs for pull requests (including the automated update PRs), for trusted
+# pushes to the default branch, and in the merge queue if one is enabled.
+#
+# This workflow handles untrusted code from pull requests, so it takes no
+# secrets and holds only a read token. Nothing here can write to the
+# repository. `pull_request_target` is deliberately not used.
+# There is deliberately no workflow_dispatch trigger.
+#
+# Required status checks are matched by SHA and context name. A manual run of
+# this workflow against an automation pull request's head SHA would publish a
+# green `ci-ok` for that SHA -- and because `changed-files-policy` only runs for
+# `pull_request`, that green would have been produced without the file-scope
+# gate that is the only thing constraining what an automated update may change.
+# GitHub's "Re-run jobs" button still works and preserves the original event,
+# so nothing operational is lost.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Re-derive the signed source metadata from OpenAI's repository. This
+  # deliberately does not trust the committed sources.json: it repeats the
+  # whole chain and then asserts the committed file is what the chain
+  # produces.
+  # ---------------------------------------------------------------------
+  verify-signed-sources:
+    name: Verify signed sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Install gnupg
+        run: sudo apt-get update && sudo apt-get install -y gnupg
+
+      - name: Recover the protected branch's metadata
+        id: base
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          # The logic lives in a script so it can be driven against real
+          # repositories by tests/test_recover_base_sources.sh, which inline
+          # YAML cannot be.
+          bash tools/recover_base_sources.sh "$BASE_REF" base-sources.json \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Re-run the trust chain against the live origin
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_PATH: ${{ steps.base.outputs.path }}
+          BASE_BOOTSTRAP: ${{ steps.base.outputs.bootstrap }}
+        run: |
+          set -eu
+          base=""
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            if [ "$BASE_BOOTSTRAP" = "true" ]; then
+              echo "NOTE: the base branch carries no packaging yet, so there"
+              echo "is no previous version for the no-downgrade and no-drift"
+              echo "rules to compare against. This is the pull request that"
+              echo "introduces sources.json. Every other check below still"
+              echo "applies in full, and once this merges the comparison"
+              echo "becomes mandatory for every later run."
+            elif [ -n "$BASE_PATH" ]; then
+              base="--base-sources $BASE_PATH"
+            else
+              # The recovery step is required for pull requests and fails the
+              # job if it cannot produce one of these, so reaching here means
+              # it did not run at all.
+              echo "base metadata was not recovered; refusing to verify" \
+                   "without the policy comparison" >&2
+              exit 1
+            fi
+          fi
+          # shellcheck disable=SC2086
+          python3 tools/verify_sources.py --strict $base
+
+  # ---------------------------------------------------------------------
+  # The automated updater is only allowed to touch sources.json. This job
+  # enforces that for every pull request, so a compromised or buggy updater
+  # cannot smuggle a packaging change through the auto-merge path.
+  # ---------------------------------------------------------------------
+  changed-files-policy:
+    name: Changed-file policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Enforce the policy for automation branches
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          THIS_REPO: ${{ github.repository }}
+        run: |
+          python3 tools/check_changed_files.py \
+            --base "origin/$BASE_REF" \
+            --head-ref "$HEAD_REF" \
+            --head-repo "$HEAD_REPO" \
+            --this-repo "$THIS_REPO"
+
+  # ---------------------------------------------------------------------
+  # Fast, cheap gates that do not need a full package build.
+  # ---------------------------------------------------------------------
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          # gnupg for the signature fixtures, binutils for `ar` (the .deb
+          # fixtures), zstandard so the zstd decompression-bomb case runs
+          # rather than skipping.
+          sudo apt-get install -y gnupg binutils python3-zstandard
+      - name: Run updater and ELF tests
+        run: PYTHONPATH="$PWD/tools:$PWD" python3 -m unittest discover -s tests -v
+
+  # ---------------------------------------------------------------------
+  # The real thing: build the package natively on every advertised system
+  # and run every check against the built output.
+  #
+  # aarch64-linux uses GitHub's native ARM64 runner. It is a real build on
+  # real hardware, not an emulated or evaluation-only stand-in. If that
+  # runner ever becomes unavailable, drop aarch64-linux from the flake's
+  # `systems` list rather than weakening this job.
+  # ---------------------------------------------------------------------
+  build:
+    name: Build ${{ matrix.system }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-24.04
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Free up disk space
+        run: |
+          # The payload is ~1.4 GB extracted and the .deb is ~400 MB.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - uses: cachix/install-nix-action@526118121621777ccd86f79b04685a9319637641 # v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            system-features = nixos-test benchmark big-parallel kvm
+
+      - name: Confirm the runner architecture matches the target
+        run: |
+          set -eu
+          actual="$(nix eval --raw --impure --expr 'builtins.currentSystem')"
+          if [ "$actual" != "${{ matrix.system }}" ]; then
+            echo "This job must build ${{ matrix.system }} natively, but the" >&2
+            echo "runner reports $actual. Refusing to cross-compile or" >&2
+            echo "emulate: an architecture is only advertised as supported" >&2
+            echo "when it is genuinely built on its own hardware." >&2
+            exit 1
+          fi
+          echo "native $actual builder confirmed"
+
+      - name: Build the package
+        run: nix build .#chatgpt -L --print-out-paths
+
+      - name: Run every check except the VM smoke test
+        run: |
+          set -eu
+          # The VM test needs KVM and is handled by its own job.
+          checks=$(nix flake show --json 2>/dev/null \
+            | python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)['checks']['${{ matrix.system }}']
+          print(' '.join(k for k in sorted(d) if k != 'vm-smoke'))")
+          echo "running: $checks"
+          for c in $checks; do
+            echo "::group::check $c"
+            nix build ".#checks.${{ matrix.system }}.$c" -L --no-link
+            echo "::endgroup::"
+          done
+
+      - name: Run the packaged launcher natively
+        run: |
+          set -eu
+          # A build that produces an unrunnable binary is not support. This
+          # executes the real launcher on real hardware for this architecture,
+          # including its plugin-cache publish.
+          out=$(nix build .#chatgpt --no-link --print-out-paths)
+          expected=$(python3 -c 'import json;print(json.load(open("sources.json"))["version"])')
+
+          # `--version` must work whatever the sandbox situation is: Electron
+          # answers it before any renderer exists. GitHub's runners restrict
+          # unprivileged user namespaces through AppArmor, so this is a real
+          # test of that claim rather than an assumption about it.
+          version="$("$out/bin/chatgpt" --version)"
+          echo "launcher reports: $version"
+          case "$version" in
+            *"$expected"*) ;;
+            *) echo "unexpected --version output" >&2; exit 1 ;;
+          esac
+          test -e "$HOME/.cache/chatgpt-desktop-nix/resources"
+          echo "writable plugin cache published"
+
+          # Starting the application is a different matter, and what the
+          # launcher should do depends on this host. Ask the kernel, then
+          # require the launcher to agree with the answer.
+          #
+          # Note the position of this step: it runs BEFORE the graphical gate
+          # below lifts kernel.apparmor_restrict_unprivileged_userns, so on
+          # GitHub's runners it takes the "restricted" branch and actually
+          # exercises the refusal. Both branches are correct, so reordering
+          # would not turn the job red -- it would just quietly stop testing
+          # the refusal path. Keep this ahead of the lift.
+          if unshare --user --map-root-user true 2>/dev/null; then
+            echo "this runner has unprivileged user namespaces;"
+            echo "the graphical smoke job covers actually starting the app"
+          else
+            echo "this runner restricts unprivileged user namespaces;"
+            echo "the launcher must refuse to start the app, and say why"
+            # Both of these must be refused. `-v` is here because it looks like
+            # an abbreviation of --version and is not one: Electron initialises
+            # Ozone and starts the app for it, so if it were ever added to the
+            # exemption the precheck would be skipped for a real start. This is
+            # the assertion that would catch that.
+            #
+            # No display here either, but the namespace check runs first and
+            # exits before Electron is ever executed, so neither can hang.
+            for args in "" "-v"; do
+              # shellcheck disable=SC2086
+              if err="$("$out/bin/chatgpt" $args 2>&1)"; then
+                echo "the launcher started the application on a host with no" >&2
+                echo "user namespaces (args: '$args'), which is exactly what" >&2
+                echo "it must never do" >&2
+                exit 1
+              fi
+              case "$err" in
+                *"unprivileged user namespaces are not available"*)
+                  echo "refused '$args', with the expected diagnostic" ;;
+                *)
+                  echo "refused '$args', but not for the expected reason:" >&2
+                  echo "$err" >&2
+                  exit 1 ;;
+              esac
+            done
+          fi
+
+      - name: Bounded graphical startup under Xvfb
+        run: |
+          set -eu
+          # Chromium's sandbox needs unprivileged user namespaces, and this
+          # package deliberately has no way to turn that sandbox off. Ubuntu
+          # 24.04 restricts them through AppArmor by default, which makes the
+          # zygote die with SIGTRAP and no output at all.
+          #
+          # Lift the restriction if we are allowed to, then actually probe it.
+          # If the probe fails, the runner cannot host this test: skip it and
+          # say so, rather than reporting a red build for a property of the
+          # runner. The NixOS VM job covers the same ground with namespaces
+          # genuinely available, and the native launcher step above has already
+          # run the real binary on this architecture.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 \
+            >/dev/null 2>&1 || true
+
+          if ! unshare --user --map-root-user true 2>/dev/null; then
+            echo "::notice title=Graphical smoke skipped::this runner does not" \
+                 "permit unprivileged user namespaces, which Chromium's" \
+                 "sandbox requires; covered by the NixOS VM job instead"
+            exit 0
+          fi
+          echo "unprivileged user namespaces are available"
+
+          out=$(nix build .#chatgpt --no-link --print-out-paths)
+          nix shell nixpkgs#xvfb-run nixpkgs#xdotool nixpkgs#procps \
+            --command bash tools/graphical-smoke.sh "$out" \
+              "$RUNNER_TEMP/graphical-${{ matrix.system }}"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: graphical-log-${{ matrix.system }}
+          path: ${{ runner.temp }}/graphical-${{ matrix.system }}/
+          retention-days: 14
+
+      - name: Native bwrap/nix-ld bridge gate
+        run: |
+          set -eu
+          # The NixOS VM covers this on x86_64 only, because a VM test needs a
+          # machine of the same architecture to boot. On ARM this is the gate:
+          # the real shim, real bubblewrap, and a genuinely generic binary that
+          # has to actually execute.
+          if ! unshare --user --map-root-user true 2>/dev/null; then
+            echo "::notice title=Bridge gate skipped::this runner does not" \
+                 "permit unprivileged user namespaces, which bubblewrap needs"
+            exit 0
+          fi
+
+          out=$(nix build .#chatgpt --no-link --print-out-paths)
+          shim=$(nix build .#chatgpt.bwrapShim --no-link --print-out-paths)
+
+          nix shell nixpkgs#gcc nixpkgs#patchelf nixpkgs#bubblewrap \
+            nixpkgs#nix-ld --command bash -eu -c '
+              case "${{ matrix.system }}" in
+                x86_64-linux)  interp=/lib64/ld-linux-x86-64.so.2 ;;
+                aarch64-linux) interp=/lib/ld-linux-aarch64.so.1 ;;
+                *) echo "unknown system" >&2; exit 1 ;;
+              esac
+
+              printf "%s\n" \
+                "#include <stdio.h>" \
+                "int main(void){printf(\"GENERIC-BINARY-RAN-OK\\n\");return 0;}" \
+                > probe.c
+              gcc -O0 -o probe probe.c
+              patchelf --set-interpreter "$interp" --set-rpath "" probe
+
+              got=$(patchelf --print-interpreter probe)
+              [ "$got" = "$interp" ] || {
+                echo "probe interpreter is $got, expected $interp" >&2; exit 1; }
+
+              # The generic loader has to exist for the bridge to bind over it.
+              if [ ! -e "$interp" ]; then
+                echo "::notice title=Bridge gate skipped::$interp is absent," \
+                     "so there is no generic loader to bridge"
+                exit 0
+              fi
+
+              echo "running the probe through the packaged bwrap shim"
+              output=$(PATH="'"$shim"'/bin:$PATH" bwrap \
+                --unshare-user --unshare-net --ro-bind / / \
+                --proc /proc --dev /dev -- "$PWD/probe" 2>&1) || {
+                  echo "the bridge failed:" >&2; echo "$output" >&2; exit 1; }
+              echo "$output"
+              case "$output" in
+                *GENERIC-BINARY-RAN-OK*) echo "bridge OK on ${{ matrix.system }}" ;;
+                *) echo "unexpected output" >&2; exit 1 ;;
+              esac
+            '
+
+      - name: Summarise the ELF inventory
+        run: |
+          out=$(nix build .#chatgpt --no-link --print-out-paths)
+          python3 -c "
+          import json
+          inv=json.load(open('$out/share/chatgpt-desktop/elf-inventory.json'))
+          rep=json.load(open('$out/share/chatgpt-desktop/elf-patch-report.json'))
+          print('ELF classes:', json.dumps(inv['counts'], indent=2))
+          print('patched programs:', len(rep['programs']))
+          print('patched libraries:', len(rep['libraries']))
+          print('left untouched:', len(rep['untouched']))
+          print('interpreter in detect-libc window:',
+                json.dumps(rep['interpreterInDetectLibcWindow'], indent=2))
+          " | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Collect diagnostics on failure
+        if: failure()
+        run: |
+          # Logs only. Never upload the OpenAI payload or the .deb.
+          mkdir -p diagnostics
+          nix log .#chatgpt > diagnostics/build.log 2>&1 || true
+          out=$(nix path-info .#chatgpt 2>/dev/null || true)
+          if [ -n "$out" ] && [ -d "$out/share/chatgpt-desktop" ]; then
+            cp "$out"/share/chatgpt-desktop/*.json diagnostics/ || true
+          fi
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: diagnostics-${{ matrix.system }}
+          path: diagnostics/
+          retention-days: 14
+
+  # ---------------------------------------------------------------------
+  # Bounded graphical start-up in a NixOS VM. Needs KVM, so it runs on its
+  # own x86_64 job.
+  # ---------------------------------------------------------------------
+  vm-smoke:
+    name: Graphical VM smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - name: Enable KVM for the test VM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -la /dev/kvm
+
+      - uses: cachix/install-nix-action@526118121621777ccd86f79b04685a9319637641 # v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            system-features = nixos-test benchmark big-parallel kvm
+
+      - name: Run the VM startup smoke test
+        run: nix build .#checks.x86_64-linux.vm-smoke -L --no-link
+
+      - name: Collect VM logs on failure
+        if: failure()
+        run: |
+          mkdir -p diagnostics
+          nix log .#checks.x86_64-linux.vm-smoke > diagnostics/vm.log 2>&1 || true
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: diagnostics-vm
+          path: diagnostics/
+          retention-days: 14
+
+  # ---------------------------------------------------------------------
+  # The single required status check.
+  #
+  # Branch protection points at this one job by name. Its name never
+  # changes, so the rules do not have to track matrix job names, and adding
+  # a matrix entry later cannot silently stop being required.
+  # ---------------------------------------------------------------------
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs:
+      - verify-signed-sources
+      - changed-files-policy
+      - unit-tests
+      - build
+      - vm-smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every gate to have succeeded
+        run: |
+          set -eu
+          # Every job must have succeeded. A skipped or cancelled required job
+          # counts as a failure so nothing merges on a partially-run pipeline.
+          case '${{ github.event_name }}' in
+            pull_request|push|merge_group) ;;
+            *)
+              echo "ci-ok refuses to report for event" \
+                   "'${{ github.event_name }}'." >&2
+              echo "This context gates merges into a protected branch and is" >&2
+              echo "only meaningful for pull_request, push and merge_group." >&2
+              exit 1
+              ;;
+          esac
+
+          failed=0
+          check() {
+            name="$1"; result="$2"; allow_skip="${3:-no}"
+            if [ "$result" = "success" ]; then
+              echo "  ok       $name"
+            elif [ "$result" = "skipped" ] && [ "$allow_skip" = "yes" ]; then
+              echo "  skipped  $name (not applicable to this event)"
+            else
+              echo "  FAILED   $name ($result)"
+              failed=1
+            fi
+          }
+
+          # changed-files-policy is the only thing constraining what an
+          # automated update may touch, so it may only be skipped for the one
+          # event that cannot introduce a change: a push to the already-
+          # protected branch. A merge_group run must NOT pass without it, and
+          # there is no workflow_dispatch trigger precisely so a manual run
+          # cannot mint this context either.
+          policy_skip=no
+          case '${{ github.event_name }}' in
+            push) policy_skip=yes ;;
+            merge_group)
+              echo "merge_group runs require the changed-file policy, but the" >&2
+              echo "job is currently gated on pull_request only. Extend that" >&2
+              echo "job before enabling a merge queue." >&2
+              failed=1
+              ;;
+          esac
+
+          check verify-signed-sources '${{ needs.verify-signed-sources.result }}'
+          check changed-files-policy  '${{ needs.changed-files-policy.result }}' "$policy_skip"
+          check unit-tests            '${{ needs.unit-tests.result }}'
+          check build                 '${{ needs.build.result }}'
+          check vm-smoke              '${{ needs.vm-smoke.result }}'
+          if [ "$failed" -ne 0 ]; then
+            echo "one or more required gates did not pass" >&2
+            exit 1
+          fi
+          echo "all required gates passed"
