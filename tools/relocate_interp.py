@@ -57,20 +57,29 @@ import sys
 
 PT_LOAD, PT_INTERP = 1, 3
 SHT_PROGBITS = 1
+SHT_NOBITS = 8
 
 #: The window detect-libc reads. The interpreter string must end within it.
 DETECT_LIBC_WINDOW = 2048
 
-#: Byte values patchelf leaves behind in space it has vacated. 0x58 ('X') is
-#: its distinctive filler; 0x00 shows up as alignment padding beside it.
+#: The single byte patchelf writes into space it has vacated.
 #:
-#: Matching on bytes alone is NOT sufficient and must never be the only test.
-#: A run of zeros occurs naturally *inside* live sections — the bundled Node
-#: binary has one at offset 1411, and writing the interpreter there produces a
-#: binary that passes every structural check and then segfaults on the first
-#: run. The authoritative test is that no section header claims the range;
-#: these byte values are only a corroborating signal.
-FILLER_BYTES = frozenset({0x58, 0x00})
+#: 0x00 was previously accepted too, and that was wrong twice over. Zeros occur
+#: naturally inside live data -- the bundled Node has a run of them at offset
+#: 1411 inside .dynstr, and writing the interpreter there produced a binary
+#: that passed every structural check and then segfaulted -- and, more
+#: fundamentally, a zero byte is not evidence of anything. 0x58 is: patchelf
+#: writes it deliberately to mark space it has abandoned, so a run of it is a
+#: positive statement about provenance rather than an absence of information.
+#:
+#: This matters because "no section header claims these bytes" is a *negative*
+#: inference. Section headers are advisory at run time and a file may be
+#: stripped, rewritten or hand-made; their silence proves nothing. The filler
+#: byte, the pinned region invariant below, and the absence of any structural
+#: claim are three independent statements, and the relocator requires all of
+#: them.
+PATCHELF_FILLER = 0x58
+FILLER_BYTES = frozenset({PATCHELF_FILLER})
 
 
 class RelocationError(Exception):
@@ -152,6 +161,42 @@ class Elf64:
                 return i
         return None
 
+    def section_header(self, index: int) -> dict:
+        base = self._sh_base(index)
+        sh_name, sh_type = struct.unpack_from("<II", self.data, base)
+        sh_flags, sh_addr, sh_offset = struct.unpack_from("<QQQ", self.data,
+                                                          base + 8)
+        sh_size = struct.unpack_from("<Q", self.data, base + 32)[0]
+        return dict(index=index, sh_name=sh_name, sh_type=sh_type,
+                    sh_flags=sh_flags, sh_addr=sh_addr, sh_offset=sh_offset,
+                    sh_size=sh_size)
+
+    def validate_sections(self) -> None:
+        """Assert every file-backed section, and the name table, is in range."""
+        if not self.e_shoff or not self.e_shnum:
+            return
+        size = len(self.data)
+        strtab_base = self._sh_base(self.e_shstrndx)
+        strtab_off = struct.unpack_from("<Q", self.data, strtab_base + 24)[0]
+        strtab_size = struct.unpack_from("<Q", self.data, strtab_base + 32)[0]
+        if strtab_off + strtab_size > size:
+            raise RelocationError(
+                f"{self.path}: section name table runs past end of file")
+
+        for i in range(self.e_shnum):
+            sh = self.section_header(i)
+            if sh["sh_type"] == SHT_NOBITS or sh["sh_size"] == 0:
+                continue
+            if sh["sh_offset"] + sh["sh_size"] > size:
+                raise RelocationError(
+                    f"{self.path}: section {i} spans "
+                    f"[{sh['sh_offset']}, {sh['sh_offset'] + sh['sh_size']}), "
+                    f"past the {size}-byte file")
+            if sh["sh_name"] >= strtab_size:
+                raise RelocationError(
+                    f"{self.path}: section {i} name offset {sh['sh_name']} is "
+                    f"outside the {strtab_size}-byte name table")
+
     def set_section_location(self, index: int, *, sh_addr: int, sh_offset: int,
                              sh_size: int) -> None:
         base = self._sh_base(index)
@@ -223,8 +268,6 @@ class Elf64:
             fh.truncate(len(self.data))
 
 
-SHT_NOBITS = 8
-
 
 def occupied_ranges(elf: Elf64,
                     moving_interp: int | None = None) -> list[tuple[int, int]]:
@@ -286,8 +329,118 @@ def occupied_ranges(elf: Elf64,
     return sorted(ranges)
 
 
+def describe_target_region(elf: Elf64, window: int = DETECT_LIBC_WINDOW,
+                           moving_interp: int | None = None) -> dict:
+    """Record everything that makes this binary's target region provable.
+
+    Emitted at review time and committed. The relocator then requires the
+    binary in front of it to match, so any change in how patchelf lays the file
+    out -- a different program-header count, a shorter filler run, a different
+    containing segment, different flags or alignment -- stops the build instead
+    of silently relocating into somewhere that merely looks free.
+    """
+    start = (elf.phdr_table_end + 7) & ~7
+    end = start
+    while end < len(elf.data) and elf.data[end] == PATCHELF_FILLER:
+        end += 1
+
+    load = elf.containing_load(start, max(1, end - start))
+    interp = elf.phdr(elf.interp_index())
+
+    return {
+        "elfHeader": {
+            "phoff": elf.e_phoff,
+            "phentsize": elf.e_phentsize,
+            "phnum": elf.e_phnum,
+            "phdrTableEnd": elf.phdr_table_end,
+            "shentsize": elf.e_shentsize,
+            "shnum": elf.e_shnum,
+            "shstrndx": elf.e_shstrndx,
+        },
+        "interpSegments": sum(
+            1 for p in elf.phdrs() if p["p_type"] == PT_INTERP),
+        "fillerByte": PATCHELF_FILLER,
+        "fillerStart": start,
+        "fillerLength": end - start,
+        "containingLoad": None if load is None else {
+            "index": load["index"],
+            "p_offset": load["p_offset"],
+            "p_vaddr": load["p_vaddr"],
+            "p_filesz": load["p_filesz"],
+            "p_flags": load["p_flags"],
+            "p_align": load["p_align"],
+        },
+        "window": window,
+        "prepatchInterp": {
+            "p_offset": interp["p_offset"],
+            "p_filesz": interp["p_filesz"],
+        },
+    }
+
+
+def assert_region_invariant(elf: Elf64, expected: dict) -> tuple[int, int]:
+    """Hold the binary to the committed description of its target region.
+
+    Returns the (start, length) of the proven filler run. Raises on any drift.
+    """
+    actual = describe_target_region(
+        elf, expected.get("window", DETECT_LIBC_WINDOW))
+
+    problems: list[str] = []
+
+    for key, want in expected.get("elfHeader", {}).items():
+        got = actual["elfHeader"].get(key)
+        if got != want:
+            problems.append(f"elfHeader.{key}: expected {want}, got {got}")
+
+    if actual["interpSegments"] != expected.get("interpSegments"):
+        problems.append(
+            f"PT_INTERP count: expected {expected.get('interpSegments')}, "
+            f"got {actual['interpSegments']}")
+
+    if actual["fillerByte"] != expected.get("fillerByte"):
+        problems.append("filler byte changed")
+
+    if actual["fillerStart"] != expected.get("fillerStart"):
+        problems.append(
+            f"filler run starts at {actual['fillerStart']}, expected "
+            f"{expected.get('fillerStart')}")
+
+    # The run may legitimately be longer than recorded (a bigger store path
+    # vacates more), but never shorter: that would mean patchelf laid the file
+    # out differently and the region is no longer the one that was reviewed.
+    if actual["fillerLength"] < expected.get("fillerLength", 0):
+        problems.append(
+            f"filler run is {actual['fillerLength']} bytes, shorter than the "
+            f"reviewed {expected.get('fillerLength')}")
+
+    want_load = expected.get("containingLoad")
+    got_load = actual["containingLoad"]
+    if want_load is None or got_load is None:
+        problems.append("the filler run is not inside a PT_LOAD segment")
+    else:
+        for key, want in want_load.items():
+            if got_load.get(key) != want:
+                problems.append(
+                    f"containing PT_LOAD {key}: expected {want}, got "
+                    f"{got_load.get(key)}")
+
+    if problems:
+        raise RelocationError(
+            f"{elf.path}: the reviewed target-region invariant no longer "
+            f"holds:\n  " + "\n  ".join(problems) +
+            "\n\nThe interpreter is only moved into a region whose provenance "
+            "was established by review. patchelf has laid this binary out "
+            "differently, so that region is not the one that was reviewed. "
+            "Re-establish the invariant by hand and commit it."
+        )
+
+    return actual["fillerStart"], actual["fillerLength"]
+
+
 def find_free_range(elf: Elf64, need: int, window: int,
-                    moving_interp: int | None = None) -> int:
+                    moving_interp: int | None = None,
+                    region: tuple[int, int] | None = None) -> int:
     """Find ``need`` unreferenced bytes ending inside ``window``.
 
     A candidate must satisfy three independent conditions:
@@ -308,6 +461,10 @@ def find_free_range(elf: Elf64, need: int, window: int,
 
     # Start after the program-header table and keep 8-byte alignment.
     offset = (elf.phdr_table_end + 7) & ~7
+    if region is not None:
+        region_start, region_length = region
+        offset = max(offset, region_start)
+        limit = min(limit, region_start + region_length)
     while offset + need <= limit:
         end = offset + need
         if claimed(offset, end):
@@ -347,10 +504,11 @@ def assert_within_window(elf: Elf64, window: int, label: str) -> None:
 
 
 def relocate(path: str, *, window: int = DETECT_LIBC_WINDOW,
-             verbose: bool = True) -> dict:
+             verbose: bool = True, expect_region: dict | None = None) -> dict:
     """Move PT_INTERP back inside the detect-libc window. Idempotent."""
     elf = Elf64(path)
     elf.validate_structure()
+    elf.validate_sections()
     original_size = len(elf.data)
 
     index = elf.interp_index()
@@ -377,8 +535,14 @@ def relocate(path: str, *, window: int = DETECT_LIBC_WINDOW,
                   f"{before['p_offset']} (within {window}); nothing to do")
         return report
 
+    region = None
+    if expect_region is not None:
+        # Positive proof first: hold the binary to the reviewed description of
+        # where patchelf's vacated space is, and confine the search to it.
+        region = assert_region_invariant(elf, expect_region)
+
     target = find_free_range(elf, len(encoded), window,
-                             moving_interp=index)
+                             moving_interp=index, region=region)
     load = elf.containing_load(target, len(encoded))
     if load is None:
         raise RelocationError(
@@ -412,7 +576,26 @@ def relocate(path: str, *, window: int = DETECT_LIBC_WINDOW,
         shutil.copymode(path, staged)
 
         verified = Elf64(staged)
+        verified.validate_structure()
+        verified.validate_sections()
         assert_within_window(verified, window, "after relocation")
+
+        # PT_INTERP and the .interp section must agree. A reader that trusts
+        # one and a reader that trusts the other must not see different things.
+        section = verified.find_section(".interp")
+        after_ph = verified.phdr(verified.interp_index())
+        if section is not None:
+            sh = verified.section_header(section)
+            if (sh["sh_offset"], sh["sh_size"]) != (
+                    after_ph["p_offset"], after_ph["p_filesz"]):
+                raise RelocationError(
+                    f"{path}: .interp section ({sh['sh_offset']}, "
+                    f"{sh['sh_size']}) disagrees with PT_INTERP "
+                    f"({after_ph['p_offset']}, {after_ph['p_filesz']})")
+            if sh["sh_addr"] != after_ph["p_vaddr"]:
+                raise RelocationError(
+                    f"{path}: .interp address {sh['sh_addr']} disagrees with "
+                    f"PT_INTERP vaddr {after_ph['p_vaddr']}")
         if verified.interp_string() != interp:
             raise RelocationError(
                 f"{path}: interpreter changed during relocation: "

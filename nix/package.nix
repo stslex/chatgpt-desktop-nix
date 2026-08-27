@@ -245,6 +245,7 @@ stdenv.mkDerivation (finalAttrs: {
       --report elf-patch-report.json \
       --require-in-window usr/lib/chatgpt/ChatGPT \
       --relocate usr/lib/chatgpt/ChatGPT \
+      --expect-region ${../elf-baseline/interp-region-${stdenv.hostPlatform.system}.json} \
       --expect-in-window ${../elf-baseline/interp-window-${stdenv.hostPlatform.system}.json}
 
     echo "--- app.asar must be byte-identical ---"

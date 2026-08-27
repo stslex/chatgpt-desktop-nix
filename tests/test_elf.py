@@ -550,3 +550,99 @@ class TestRunpathMerging(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRegionInvariant(ElfTempMixin):
+    """The target region is proven, not inferred.
+
+    "No section header claims these bytes" is a negative inference: section
+    headers are advisory at run time and a file may be stripped or hand-made,
+    so their silence proves nothing. The relocator instead requires the binary
+    to match a reviewed description of where patchelf's vacated space is.
+    """
+
+    def build(self, filler=0x58):
+        long_interp = (b"/nix/store/" + b"q" * 32 +
+                       b"-glibc/lib/ld-linux-x86-64.so.2\0")
+        return self.write(build_elf(interp=long_interp, interp_offset=6000,
+                                    total_size=16384, filler=filler))
+
+    def test_a_matching_invariant_permits_relocation(self):
+        path = self.build()
+        region = R.describe_target_region(R.Elf64(path))
+        report = R.relocate(path, verbose=False, expect_region=region)
+        self.assertTrue(report["moved"])
+
+    def test_each_pinned_property_is_load_bearing(self):
+        import copy
+        base = R.describe_target_region(R.Elf64(self.build()))
+        mutations = {
+            "phnum": lambda r: r["elfHeader"].__setitem__("phnum", 99),
+            "phoff": lambda r: r["elfHeader"].__setitem__("phoff", 128),
+            "filler start": lambda r: r.__setitem__("fillerStart", 4096),
+            "filler length": lambda r: r.__setitem__("fillerLength", 10 ** 9),
+            "filler byte": lambda r: r.__setitem__("fillerByte", 0),
+            "PT_INTERP count": lambda r: r.__setitem__("interpSegments", 7),
+            "load offset": lambda r: r["containingLoad"].__setitem__(
+                "p_offset", 4096),
+            "load flags": lambda r: r["containingLoad"].__setitem__(
+                "p_flags", 7),
+            "load align": lambda r: r["containingLoad"].__setitem__(
+                "p_align", 3),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(pinned=label):
+                bad = copy.deepcopy(base)
+                mutate(bad)
+                with self.assertRaises(R.RelocationError) as ctx:
+                    R.relocate(self.build(), verbose=False, expect_region=bad)
+                self.assertIn("invariant no longer holds", str(ctx.exception))
+
+    def test_zero_padding_is_no_longer_treated_as_filler(self):
+        # A zero byte is not evidence of anything; only patchelf's own 0x58 is.
+        self.assertNotIn(0x00, R.FILLER_BYTES)
+        self.assertEqual(R.FILLER_BYTES, frozenset({0x58}))
+        path = self.build(filler=0x00)
+        with self.assertRaises(R.RelocationError):
+            R.relocate(path, verbose=False)
+
+
+class TestStructuralValidation(ElfTempMixin):
+    def test_a_section_running_past_the_file_is_refused(self):
+        data = bytearray(build_elf())
+        # Inflate the .shstrtab section's size well past the file.
+        e_shoff = struct.unpack_from("<Q", data, 40)[0]
+        struct.pack_into("<Q", data, e_shoff + 64 + 32, 10 ** 9)
+        path = self.write(bytes(data))
+        with self.assertRaises(R.RelocationError) as ctx:
+            R.Elf64(path).validate_sections()
+        self.assertRegex(str(ctx.exception), "past the|past end of file")
+
+    def test_an_out_of_range_section_name_offset_is_refused(self):
+        data = bytearray(build_elf())
+        e_shoff = struct.unpack_from("<Q", data, 40)[0]
+        struct.pack_into("<I", data, e_shoff + 64, 10 ** 6)   # sh_name
+        path = self.write(bytes(data))
+        with self.assertRaises(R.RelocationError) as ctx:
+            R.Elf64(path).validate_sections()
+        self.assertIn("name table", str(ctx.exception))
+
+    def test_the_classifier_refuses_a_truncated_program_header_table(self):
+        data = bytearray(build_elf())
+        struct.pack_into("<H", data, 56, 500)      # absurd phnum
+        path = self.write(bytes(data))
+        with self.assertRaises(C.ElfError) as ctx:
+            C.read_elf(path)
+        self.assertIn("past the", str(ctx.exception))
+
+    def test_the_classifier_refuses_a_segment_past_the_file(self):
+        data = bytearray(build_elf())
+        e_phnum = struct.unpack_from("<H", data, 56)[0]
+        base = 64 + e_phnum * 56
+        struct.pack_into("<II", data, base, 4, 4)
+        struct.pack_into("<QQQ", data, base + 8, 8000, 8000, 8000)
+        struct.pack_into("<QQQ", data, base + 32, 10 ** 9, 10 ** 9, 4)
+        struct.pack_into("<H", data, 56, e_phnum + 1)
+        path = self.write(bytes(data))
+        with self.assertRaises(C.ElfError):
+            C.read_elf(path)

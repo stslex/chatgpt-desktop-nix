@@ -32,6 +32,13 @@ def run(cmd: list[str]) -> None:
         raise SystemExit(
             f"command failed: {' '.join(cmd)}\n{proc.stdout}\n{proc.stderr}"
         )
+    # patchelf reports some problems on stderr while still exiting 0 -- for
+    # instance a file it declines to touch. Treating that as success would let
+    # a binary ship unpatched with nothing to show for it.
+    if proc.stderr.strip():
+        raise SystemExit(
+            f"command wrote diagnostics: {' '.join(cmd)}\n{proc.stderr}"
+        )
 
 
 def current_runpath(path: str, patchelf: str) -> str:
@@ -88,11 +95,22 @@ def main() -> int:
     parser.add_argument("--runpath", required=True,
                         help="colon-separated library path to add")
     parser.add_argument("--patchelf", default="patchelf")
+    parser.add_argument(
+        "--emit-region",
+        help="write the observed target-region description for every "
+             "relocated binary here, for review and pinning",
+    )
     parser.add_argument("--report", help="write a JSON report here")
     parser.add_argument(
         "--require-in-window", action="append", default=[],
         help="payload-relative path whose interpreter MUST end up inside the "
              "detect-libc window; repeatable",
+    )
+    parser.add_argument(
+        "--expect-region",
+        help="JSON describing the reviewed target region for each relocated "
+             "binary; the interpreter is only moved into a region that still "
+             "matches its recorded description",
     )
     parser.add_argument(
         "--expect-in-window",
@@ -113,6 +131,11 @@ def main() -> int:
 
     required = set(args.require_in_window)
     relocatable = set(args.relocate) | required
+    regions: dict = {}
+    observed_regions: dict = {}
+    if args.expect_region:
+        with open(args.expect_region, encoding="utf-8") as fh:
+            regions = json.load(fh)
     in_window: dict[str, bool] = {}
     patched_programs: list[str] = []
     patched_libraries: list[str] = []
@@ -156,8 +179,15 @@ def main() -> int:
                 patched_programs.append(entry["path"])
                 continue
 
+            if args.emit_region:
+                # Measure before relocating: afterwards the interpreter sits at
+                # the start of the run, so the filler would read as zero-length.
+                observed_regions[entry["path"]] = R.describe_target_region(
+                    R.Elf64(path))
+
             try:
-                R.relocate(path, verbose=False)
+                R.relocate(path, verbose=False,
+                           expect_region=regions.get(entry["path"]))
                 relocated = True
                 failure = None
             except R.RelocationError as exc:
@@ -242,6 +272,11 @@ def main() -> int:
             print(f"  - {problem}", file=sys.stderr)
         return 1
     print("  patched tree matches what the classifier intended", file=sys.stderr)
+
+    if args.emit_region:
+        with open(args.emit_region, "w", encoding="utf-8") as fh:
+            json.dump(observed_regions, fh, indent=1, sort_keys=True)
+            fh.write("\n")
 
     if args.expect_in_window:
         with open(args.expect_in_window, encoding="utf-8") as fh:

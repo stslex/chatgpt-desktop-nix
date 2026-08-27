@@ -119,8 +119,17 @@ def read_elf(path: str) -> ElfInfo | None:
             e_phoff = struct.unpack_from(endian + "I", head, 28)[0]
             e_phentsize, e_phnum = struct.unpack_from(endian + "HH", head, 42)
 
+        total = os.path.getsize(path)
+        if e_phentsize == 0 or e_phnum == 0:
+            raise ElfError(f"{path}: no program headers")
+        if e_phoff + e_phentsize * e_phnum > total:
+            raise ElfError(
+                f"{path}: program header table runs past the {total}-byte file")
+
         fh.seek(e_phoff)
         phdrs = fh.read(e_phentsize * e_phnum)
+        if len(phdrs) != e_phentsize * e_phnum:
+            raise ElfError(f"{path}: truncated program header table")
 
         interp = interp_off = interp_sz = None
         segment_types: set[str] = set()
@@ -131,7 +140,7 @@ def read_elf(path: str) -> ElfInfo | None:
         for i in range(e_phnum):
             base = i * e_phentsize
             if base + e_phentsize > len(phdrs):
-                break
+                raise ElfError(f"{path}: program header {i} is truncated")
             p_type = struct.unpack_from(endian + "I", phdrs, base)[0]
             segment_types.add(PT_NAMES.get(p_type, f"0x{p_type:x}"))
             if elf_class == ELFCLASS64:
@@ -140,6 +149,12 @@ def read_elf(path: str) -> ElfInfo | None:
             else:
                 p_offset, p_vaddr = struct.unpack_from(endian + "II", phdrs, base + 4)
                 p_filesz = struct.unpack_from(endian + "I", phdrs, base + 16)[0]
+
+            if p_filesz and p_offset + p_filesz > total:
+                raise ElfError(
+                    f"{path}: segment {i} (type 0x{p_type:x}) spans "
+                    f"[{p_offset}, {p_offset + p_filesz}), past the "
+                    f"{total}-byte file")
 
             if p_type == PT_INTERP:
                 interp_off, interp_sz = p_offset, p_filesz

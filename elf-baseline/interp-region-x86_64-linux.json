@@ -1,0 +1,30 @@
+{
+ "usr/lib/chatgpt/ChatGPT": {
+  "containingLoad": {
+   "index": 1,
+   "p_align": 4096,
+   "p_filesz": 65163452,
+   "p_flags": 4,
+   "p_offset": 0,
+   "p_vaddr": 0
+  },
+  "elfHeader": {
+   "phdrTableEnd": 960,
+   "phentsize": 56,
+   "phnum": 16,
+   "phoff": 64,
+   "shentsize": 64,
+   "shnum": 38,
+   "shstrndx": 30
+  },
+  "fillerByte": 88,
+  "fillerLength": 209160,
+  "fillerStart": 960,
+  "interpSegments": 1,
+  "prepatchInterp": {
+   "p_filesz": 83,
+   "p_offset": 314945896
+  },
+  "window": 2048
+ }
+}
