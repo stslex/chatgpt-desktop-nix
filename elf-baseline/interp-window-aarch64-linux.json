@@ -1,10 +1,10 @@
 {
  "usr/lib/chatgpt/ChatGPT": true,
- "usr/lib/chatgpt/browser_crashpad_handler": true,
+ "usr/lib/chatgpt/browser_crashpad_handler": false,
  "usr/lib/chatgpt/resources/cua_node/bin/node": false,
- "usr/lib/chatgpt/resources/cua_node/lib/node_modules/.bin/sky_linux_arm64": true,
- "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@oai/cua/bin/linux/sky_linux_arm64": true,
- "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@oai/sky/bin/linux/sky_linux_arm64": true,
- "usr/lib/chatgpt/resources/plugins/openai-bundled/plugins/chrome/extension-host/linux/arm64/extension-host": true,
- "usr/lib/chatgpt/resources/rg": true
+ "usr/lib/chatgpt/resources/cua_node/lib/node_modules/.bin/sky_linux_arm64": false,
+ "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@oai/cua/bin/linux/sky_linux_arm64": false,
+ "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@oai/sky/bin/linux/sky_linux_arm64": false,
+ "usr/lib/chatgpt/resources/plugins/openai-bundled/plugins/chrome/extension-host/linux/arm64/extension-host": false,
+ "usr/lib/chatgpt/resources/rg": false
 }

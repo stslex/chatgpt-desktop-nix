@@ -161,11 +161,46 @@ class Elf64:
 
     # -- helpers -----------------------------------------------------------
 
-    def interp_index(self) -> int:
+    def validate_structure(self) -> None:
+        """Assert every header table lies inside the file before reading it."""
+        size = len(self.data)
+        if self.e_phentsize < 56 or self.e_phnum == 0:
+            raise RelocationError(
+                f"{self.path}: implausible program header table "
+                f"(entsize={self.e_phentsize}, num={self.e_phnum})")
+        if self.e_phoff + self.e_phentsize * self.e_phnum > size:
+            raise RelocationError(
+                f"{self.path}: program header table runs past end of file")
+        if self.e_shoff:
+            if self.e_shentsize < 64:
+                raise RelocationError(
+                    f"{self.path}: implausible section header entry size "
+                    f"{self.e_shentsize}")
+            if self.e_shoff + self.e_shentsize * self.e_shnum > size:
+                raise RelocationError(
+                    f"{self.path}: section header table runs past end of file")
+            if self.e_shnum and self.e_shstrndx >= self.e_shnum:
+                raise RelocationError(
+                    f"{self.path}: shstrndx {self.e_shstrndx} is out of range")
         for phdr in self.phdrs():
-            if phdr["p_type"] == PT_INTERP:
-                return phdr["index"]
-        raise RelocationError(f"{self.path}: no PT_INTERP segment")
+            end = phdr["p_offset"] + phdr["p_filesz"]
+            if phdr["p_filesz"] and end > size:
+                raise RelocationError(
+                    f"{self.path}: segment {phdr['index']} "
+                    f"(type 0x{phdr['p_type']:x}) extends to {end}, past the "
+                    f"{size}-byte file")
+
+    def interp_index(self) -> int:
+        found = [p["index"] for p in self.phdrs() if p["p_type"] == PT_INTERP]
+        if not found:
+            raise RelocationError(f"{self.path}: no PT_INTERP segment")
+        if len(found) > 1:
+            # The kernel uses the first; other tools may not agree. Rewriting
+            # one of several would leave the file self-inconsistent.
+            raise RelocationError(
+                f"{self.path}: {len(found)} PT_INTERP segments; exactly one is "
+                f"expected. Refusing to guess which one is authoritative.")
+        return found[0]
 
     def interp_string(self) -> str:
         phdr = self.phdr(self.interp_index())
@@ -191,7 +226,8 @@ class Elf64:
 SHT_NOBITS = 8
 
 
-def occupied_ranges(elf: Elf64) -> list[tuple[int, int]]:
+def occupied_ranges(elf: Elf64,
+                    moving_interp: int | None = None) -> list[tuple[int, int]]:
     """Every file range that some ELF structure actually claims.
 
     Covers the ELF header, the program-header table, the section-header table
@@ -225,15 +261,33 @@ def occupied_ranges(elf: Elf64) -> list[tuple[int, int]]:
             continue
         ranges.append((sh_offset, sh_offset + sh_size))
 
-    # Note that PT_LOAD ranges are deliberately NOT added here. The gap we are
-    # looking for is by definition inside a PT_LOAD -- that is what makes it
-    # mapped and addressable -- so treating whole segments as occupied would
-    # rule out every candidate. Within a mapped segment it is the section table
-    # that says which bytes are live, and patchelf keeps it accurate.
+    # Every file-backed program segment except PT_LOAD.
+    #
+    # PT_LOAD is a mapping container: the gap we want is by definition inside
+    # one, so treating whole PT_LOADs as occupied would rule out every
+    # candidate. Within a PT_LOAD it is the section table that says which bytes
+    # are live.
+    #
+    # Every other segment type is different -- PT_NOTE, PT_GNU_PROPERTY,
+    # PT_DYNAMIC, PT_TLS, PT_PHDR and friends each point at one specific live
+    # structure, and the section table need not describe it. Omitting them is
+    # not theoretical: a PT_GNU_PROPERTY region carrying CET/IBT markings, with
+    # a zero-valued payload and no section header, was selected as "free" and
+    # overwritten with the interpreter string.
+    for index, phdr in enumerate(elf.phdrs()):
+        if phdr["p_type"] == PT_LOAD or not phdr["p_filesz"]:
+            continue
+        if index == moving_interp:
+            # The bytes we are relocating away from are the one region that is
+            # legitimately about to become free.
+            continue
+        ranges.append((phdr["p_offset"], phdr["p_offset"] + phdr["p_filesz"]))
+
     return sorted(ranges)
 
 
-def find_free_range(elf: Elf64, need: int, window: int) -> int:
+def find_free_range(elf: Elf64, need: int, window: int,
+                    moving_interp: int | None = None) -> int:
     """Find ``need`` unreferenced bytes ending inside ``window``.
 
     A candidate must satisfy three independent conditions:
@@ -246,7 +300,7 @@ def find_free_range(elf: Elf64, need: int, window: int) -> int:
     sections contain runs of zeros, and writing into one produces a binary
     that looks structurally valid and crashes at runtime.
     """
-    occupied = occupied_ranges(elf)
+    occupied = occupied_ranges(elf, moving_interp=moving_interp)
     limit = min(window, len(elf.data))
 
     def claimed(start: int, end: int) -> bool:
@@ -296,6 +350,7 @@ def relocate(path: str, *, window: int = DETECT_LIBC_WINDOW,
              verbose: bool = True) -> dict:
     """Move PT_INTERP back inside the detect-libc window. Idempotent."""
     elf = Elf64(path)
+    elf.validate_structure()
     original_size = len(elf.data)
 
     index = elf.interp_index()
@@ -322,7 +377,8 @@ def relocate(path: str, *, window: int = DETECT_LIBC_WINDOW,
                   f"{before['p_offset']} (within {window}); nothing to do")
         return report
 
-    target = find_free_range(elf, len(encoded), window)
+    target = find_free_range(elf, len(encoded), window,
+                             moving_interp=index)
     load = elf.containing_load(target, len(encoded))
     if load is None:
         raise RelocationError(

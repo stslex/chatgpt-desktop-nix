@@ -146,5 +146,71 @@ class TestCommittedSourcesMatchTheRealRelease(unittest.TestCase):
                 self.assertEqual(entry["debianArchitecture"], arch)
 
 
+
+class TestObservedCandidateDrift(unittest.TestCase):
+    """Drift must be caught against the recorded candidate, not just main.
+
+    main holds V1. The updater opens a V2 pull request pinning digest A. That
+    pull request fails CI and stays open. Upstream then republishes V2 with
+    digest B. Comparing only against main sees a normal V1 -> V2 upgrade, and
+    the same-version republish that is supposed to require review is accepted.
+    """
+
+    def test_the_v1_main_v2a_pr_v2b_rerun_sequence_is_refused(self):
+        main = sources("26.820.60940", amd_sha="1" * 64, arm_sha="2" * 64)
+        recorded = sources("26.820.71523", amd_sha="a" * 64, arm_sha="b" * 64)
+        republished = sources("26.820.71523", amd_sha="c" * 64, arm_sha="b" * 64)
+
+        # Against main alone this looks like an ordinary upgrade.
+        U.guard_downgrade(main, republished)
+        U.guard_same_version_drift(main, republished)
+
+        # Against the recorded candidate it is a same-version republish.
+        with self.assertRaises(T.TrustError) as ctx:
+            U.guard_observed_candidate(recorded, republished)
+        message = str(ctx.exception)
+        self.assertIn("republished", message)
+        self.assertIn("amd64.sha256", message)
+        self.assertIn("manual-review", message)
+
+    def test_an_identical_recorded_candidate_is_accepted(self):
+        recorded = sources("26.820.71523")
+        U.guard_observed_candidate(recorded, sources("26.820.71523"))
+
+    def test_a_size_or_filename_change_is_also_caught(self):
+        recorded = sources("26.820.71523", amd_size=100)
+        with self.assertRaises(T.TrustError):
+            U.guard_observed_candidate(recorded, sources("26.820.71523", amd_size=101))
+
+    def test_a_stale_branch_for_another_version_is_ignored(self):
+        recorded = sources("26.820.60940", amd_sha="a" * 64)
+        U.guard_observed_candidate(recorded, sources("26.820.71523", amd_sha="f" * 64))
+
+    def test_no_recorded_candidate_is_not_an_error(self):
+        U.guard_observed_candidate({}, sources("26.820.71523"))
+
+
+class TestVerificationOrder(unittest.TestCase):
+    """The package bodies must be verified before the no-op decision."""
+
+    def test_update_py_has_no_skip_verification_escape(self):
+        import inspect
+        source = inspect.getsource(U)
+        self.assertNotIn("skip_deb_verification", source,
+                         "a flag that skips .deb verification must not exist "
+                         "on any path that can write sources.json")
+
+    def test_verify_debs_precedes_the_already_current_return(self):
+        import inspect
+        source = inspect.getsource(U.main)
+        verify_at = source.index("verify_debs(release, workdir)")
+        noop_at = source.index("if previous == candidate:")
+        self.assertLess(
+            verify_at, noop_at,
+            "the 'already current' early return happens before the package "
+            "bodies are verified, so a successful scheduled no-op would prove "
+            "nothing about the artefacts",
+        )
+
 if __name__ == "__main__":
     unittest.main()

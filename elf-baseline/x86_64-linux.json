@@ -52,7 +52,18 @@
     "ld-linux-x86-64.so.2"
    ],
    "path": "usr/lib/chatgpt/ChatGPT",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "INTERP",
+    "LOAD",
+    "NOTE",
+    "PHDR",
+    "TLS"
+   ]
   },
   {
    "action": "patch-interpreter-and-runpath",
@@ -69,7 +80,18 @@
     "ld-linux-x86-64.so.2"
    ],
    "path": "usr/lib/chatgpt/browser_crashpad_handler",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "INTERP",
+    "LOAD",
+    "NOTE",
+    "PHDR",
+    "TLS"
+   ]
   },
   {
    "action": "patch-runpath",
@@ -84,7 +106,17 @@
     "ld-linux-x86-64.so.2"
    ],
    "path": "usr/lib/chatgpt/libEGL.so",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE",
+    "PHDR",
+    "TLS"
+   ]
   },
   {
    "action": "patch-runpath",
@@ -99,7 +131,17 @@
     "ld-linux-x86-64.so.2"
    ],
    "path": "usr/lib/chatgpt/libGLESv2.so",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE",
+    "PHDR",
+    "TLS"
+   ]
   },
   {
    "action": "leave-alone",
@@ -116,7 +158,16 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/libqt5_shim.so",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE",
+    "PHDR"
+   ]
   },
   {
    "action": "leave-alone",
@@ -133,7 +184,16 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/libqt6_shim.so",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE",
+    "PHDR"
+   ]
   },
   {
    "action": "patch-runpath",
@@ -150,7 +210,17 @@
     "ld-linux-x86-64.so.2"
    ],
    "path": "usr/lib/chatgpt/libvk_swiftshader.so",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE",
+    "PHDR",
+    "TLS"
+   ]
   },
   {
    "action": "patch-runpath",
@@ -166,7 +236,17 @@
     "ld-linux-x86-64.so.2"
    ],
    "path": "usr/lib/chatgpt/libvulkan.so.1",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE",
+    "PHDR",
+    "TLS"
+   ]
   },
   {
    "action": "patch-runpath",
@@ -182,7 +262,15 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@parcel/watcher-linux-x64-glibc/watcher.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "patch-runpath",
@@ -195,7 +283,16 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/dist/native/linux/x64/serial_control.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_PROPERTY",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "leave-alone",
@@ -212,7 +309,15 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/node-hid/prebuilds/HID-linux-arm/node-napi-v4.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "0x70000001",
+    "DYNAMIC",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "leave-alone",
@@ -229,7 +334,15 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/node-hid/prebuilds/HID-linux-arm64/node-napi-v4.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "leave-alone",
@@ -244,7 +357,16 @@
     "libc.musl-x86_64.so.1"
    ],
    "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/node-hid/prebuilds/HID-linux-x64-musl/node-napi-v4.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_PROPERTY",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "patch-runpath",
@@ -261,7 +383,15 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/node-hid/prebuilds/HID-linux-x64/node-napi-v4.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "leave-alone",
@@ -279,7 +409,15 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/node-hid/prebuilds/HID_hidraw-linux-arm/node-napi-v4.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "0x70000001",
+    "DYNAMIC",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "leave-alone",
@@ -297,7 +435,15 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/node-hid/prebuilds/HID_hidraw-linux-arm64/node-napi-v4.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "leave-alone",
@@ -312,7 +458,16 @@
     "libc.musl-x86_64.so.1"
    ],
    "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/node-hid/prebuilds/HID_hidraw-linux-x64-musl/node-napi-v4.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_PROPERTY",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "patch-runpath",
@@ -330,7 +485,15 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/node-hid/prebuilds/HID_hidraw-linux-x64/node-napi-v4.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "leave-alone",
@@ -346,7 +509,16 @@
     "libc.so"
    ],
    "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/serialport/node_modules/@serialport/bindings-cpp/prebuilds/android-arm/node.napi.armv7.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "0x70000001",
+    "DYNAMIC",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE",
+    "PHDR"
+   ]
   },
   {
    "action": "leave-alone",
@@ -362,7 +534,16 @@
     "libc.so"
    ],
    "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/serialport/node_modules/@serialport/bindings-cpp/prebuilds/android-arm64/node.napi.armv8.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE",
+    "PHDR"
+   ]
   },
   {
    "action": "leave-alone",
@@ -377,7 +558,15 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/serialport/node_modules/@serialport/bindings-cpp/prebuilds/linux-arm/node.napi.armv6.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "0x70000001",
+    "DYNAMIC",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "leave-alone",
@@ -392,7 +581,15 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/serialport/node_modules/@serialport/bindings-cpp/prebuilds/linux-arm/node.napi.armv7.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "0x70000001",
+    "DYNAMIC",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "leave-alone",
@@ -408,7 +605,15 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/serialport/node_modules/@serialport/bindings-cpp/prebuilds/linux-arm64/node.napi.armv8.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "patch-runpath",
@@ -424,7 +629,15 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/serialport/node_modules/@serialport/bindings-cpp/prebuilds/linux-x64/node.napi.glibc.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "leave-alone",
@@ -438,7 +651,16 @@
     "libc.musl-x86_64.so.1"
    ],
    "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/node_modules/serialport/node_modules/@serialport/bindings-cpp/prebuilds/linux-x64/node.napi.musl.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_PROPERTY",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "patch-runpath",
@@ -455,7 +677,16 @@
     "ld-linux-x86-64.so.2"
    ],
    "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/better-sqlite3/build/Release/better_sqlite3.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE",
+    "PHDR"
+   ]
   },
   {
    "action": "patch-runpath",
@@ -472,7 +703,16 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/app.asar.unpacked/node_modules/node-pty/build/Release/pty.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE",
+    "PHDR"
+   ]
   },
   {
    "action": "leave-alone",
@@ -482,7 +722,15 @@
    "machine": "x86_64",
    "needed": [],
    "path": "usr/lib/chatgpt/resources/codex",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "TLS"
+   ]
   },
   {
    "action": "leave-alone",
@@ -492,7 +740,15 @@
    "machine": "x86_64",
    "needed": [],
    "path": "usr/lib/chatgpt/resources/codex-code-mode-host",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "TLS"
+   ]
   },
   {
    "action": "patch-interpreter-and-runpath",
@@ -510,7 +766,18 @@
     "ld-linux-x86-64.so.2"
    ],
    "path": "usr/lib/chatgpt/resources/cua_node/bin/node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "INTERP",
+    "LOAD",
+    "NOTE",
+    "PHDR",
+    "TLS"
+   ]
   },
   {
    "action": "leave-alone",
@@ -520,7 +787,15 @@
    "machine": "x86_64",
    "needed": [],
    "path": "usr/lib/chatgpt/resources/cua_node/bin/node_repl",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "TLS"
+   ]
   },
   {
    "action": "patch-interpreter-and-runpath",
@@ -535,7 +810,19 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/.bin/sky_linux_x64",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_PROPERTY",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "INTERP",
+    "LOAD",
+    "NOTE",
+    "PHDR",
+    "TLS"
+   ]
   },
   {
    "action": "patch-runpath",
@@ -554,7 +841,16 @@
     "ld-linux-x86-64.so.2"
    ],
    "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@img/sharp-libvips-linux-x64/lib/libvips-cpp.so.8.18.3",
-   "runpath": "$ORIGIN/"
+   "runpath": "$ORIGIN/",
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE",
+    "TLS"
+   ]
   },
   {
    "action": "patch-runpath",
@@ -572,7 +868,15 @@
     "ld-linux-x86-64.so.2"
    ],
    "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@img/sharp-linux-x64/lib/sharp-linux-x64-0.35.3.node",
-   "runpath": "$ORIGIN/../../sharp-libvips-linux-x64/lib:$ORIGIN/../../../sharp-libvips-linux-x64/1.3.2/lib:$ORIGIN/../../node_modules/@img/sharp-libvips-linux-x64/lib:$ORIGIN/../../../node_modules/@img/sharp-libvips-linux-x64/lib:$ORIGIN/../../../../../@img-sharp-libvips-linux-x64-npm-1.3.2-72fc7e4630/node_modules/@img/sharp-libvips-linux-x64/lib"
+   "runpath": "$ORIGIN/../../sharp-libvips-linux-x64/lib:$ORIGIN/../../../sharp-libvips-linux-x64/1.3.2/lib:$ORIGIN/../../node_modules/@img/sharp-libvips-linux-x64/lib:$ORIGIN/../../../node_modules/@img/sharp-libvips-linux-x64/lib:$ORIGIN/../../../../../@img-sharp-libvips-linux-x64-npm-1.3.2-72fc7e4630/node_modules/@img/sharp-libvips-linux-x64/lib",
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "patch-runpath",
@@ -590,7 +894,15 @@
     "ld-linux-x86-64.so.2"
    ],
    "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@napi-rs/canvas-linux-x64-gnu/skia.linux-x64-gnu.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "TLS"
+   ]
   },
   {
    "action": "patch-interpreter-and-runpath",
@@ -605,7 +917,19 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@oai/cua/bin/linux/sky_linux_x64",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_PROPERTY",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "INTERP",
+    "LOAD",
+    "NOTE",
+    "PHDR",
+    "TLS"
+   ]
   },
   {
    "action": "leave-alone",
@@ -621,7 +945,16 @@
     "libc.so"
    ],
    "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@oai/cua/dist/lib/js/oai_js_browser/dist/skill/node_modules/classic-level/prebuilds/android-arm/classic-level.armv7.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "0x70000001",
+    "DYNAMIC",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE",
+    "PHDR"
+   ]
   },
   {
    "action": "leave-alone",
@@ -637,7 +970,16 @@
     "libc.so"
    ],
    "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@oai/cua/dist/lib/js/oai_js_browser/dist/skill/node_modules/classic-level/prebuilds/android-arm64/classic-level.armv8.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE",
+    "PHDR"
+   ]
   },
   {
    "action": "leave-alone",
@@ -652,7 +994,14 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@oai/cua/dist/lib/js/oai_js_browser/dist/skill/node_modules/classic-level/prebuilds/linux-arm/classic-level.armv6.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "leave-alone",
@@ -667,7 +1016,14 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@oai/cua/dist/lib/js/oai_js_browser/dist/skill/node_modules/classic-level/prebuilds/linux-arm/classic-level.armv7.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "leave-alone",
@@ -683,7 +1039,15 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@oai/cua/dist/lib/js/oai_js_browser/dist/skill/node_modules/classic-level/prebuilds/linux-arm64/classic-level.armv8.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "leave-alone",
@@ -696,7 +1060,16 @@
     "libc.musl-x86_64.so.1"
    ],
    "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@oai/cua/dist/lib/js/oai_js_browser/dist/skill/node_modules/classic-level/prebuilds/linux-x64/classic-level.musl.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_PROPERTY",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "patch-runpath",
@@ -712,7 +1085,15 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@oai/cua/dist/lib/js/oai_js_browser/dist/skill/node_modules/classic-level/prebuilds/linux-x64/classic-level.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "patch-interpreter-and-runpath",
@@ -727,7 +1108,19 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@oai/sky/bin/linux/sky_linux_x64",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_PROPERTY",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "INTERP",
+    "LOAD",
+    "NOTE",
+    "PHDR",
+    "TLS"
+   ]
   },
   {
    "action": "leave-alone",
@@ -743,7 +1136,16 @@
     "libc.so"
    ],
    "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/classic-level/prebuilds/android-arm/classic-level.armv7.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "0x70000001",
+    "DYNAMIC",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE",
+    "PHDR"
+   ]
   },
   {
    "action": "leave-alone",
@@ -759,7 +1161,16 @@
     "libc.so"
    ],
    "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/classic-level/prebuilds/android-arm64/classic-level.armv8.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE",
+    "PHDR"
+   ]
   },
   {
    "action": "leave-alone",
@@ -774,7 +1185,14 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/classic-level/prebuilds/linux-arm/classic-level.armv6.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "leave-alone",
@@ -789,7 +1207,14 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/classic-level/prebuilds/linux-arm/classic-level.armv7.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "leave-alone",
@@ -805,7 +1230,15 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/classic-level/prebuilds/linux-arm64/classic-level.armv8.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "leave-alone",
@@ -818,7 +1251,16 @@
     "libc.musl-x86_64.so.1"
    ],
    "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/classic-level/prebuilds/linux-x64/classic-level.musl.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_PROPERTY",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "patch-runpath",
@@ -834,7 +1276,15 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/cua_node/lib/node_modules/classic-level/prebuilds/linux-x64/classic-level.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "patch-runpath",
@@ -850,7 +1300,16 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/native/hid-topology-watcher.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE",
+    "PHDR"
+   ]
   },
   {
    "action": "patch-runpath",
@@ -866,7 +1325,15 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/plugins/openai-bundled/plugins/browser/node_modules/classic-level/prebuilds/linux-x64/classic-level.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "patch-interpreter-and-runpath",
@@ -882,7 +1349,18 @@
     "libdl.so.2"
    ],
    "path": "usr/lib/chatgpt/resources/plugins/openai-bundled/plugins/chrome/extension-host/linux/x64/extension-host",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "INTERP",
+    "LOAD",
+    "NOTE",
+    "PHDR",
+    "TLS"
+   ]
   },
   {
    "action": "patch-runpath",
@@ -898,7 +1376,15 @@
     "libc.so.6"
    ],
    "path": "usr/lib/chatgpt/resources/plugins/openai-bundled/plugins/chrome/node_modules/classic-level/prebuilds/linux-x64/classic-level.node",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "NOTE"
+   ]
   },
   {
    "action": "leave-alone",
@@ -908,7 +1394,14 @@
    "machine": "x86_64",
    "needed": [],
    "path": "usr/lib/chatgpt/resources/plugins/openai-bundled/plugins/latex/bin/tectonic",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "TLS"
+   ]
   },
   {
    "action": "leave-alone",
@@ -918,7 +1411,15 @@
    "machine": "x86_64",
    "needed": [],
    "path": "usr/lib/chatgpt/resources/rg",
-   "runpath": null
+   "runpath": null,
+   "segments": [
+    "DYNAMIC",
+    "GNU_EH_FRAME",
+    "GNU_RELRO",
+    "GNU_STACK",
+    "LOAD",
+    "TLS"
+   ]
   }
  ],
  "system": "x86_64-linux"

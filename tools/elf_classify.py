@@ -31,6 +31,15 @@ from typing import Iterator
 ELFCLASS32, ELFCLASS64 = 1, 2
 ET_EXEC, ET_DYN = 2, 3
 PT_LOAD, PT_DYNAMIC, PT_INTERP, PT_NOTE = 1, 2, 3, 4
+
+#: Program header types recorded in the inventory, so a payload that gains or
+#: loses a structural segment (a GNU property note, say) fails the baseline
+#: comparison rather than passing unnoticed.
+PT_NAMES = {
+    1: "LOAD", 2: "DYNAMIC", 3: "INTERP", 4: "NOTE", 6: "PHDR", 7: "TLS",
+    0x6474E550: "GNU_EH_FRAME", 0x6474E551: "GNU_STACK",
+    0x6474E552: "GNU_RELRO", 0x6474E553: "GNU_PROPERTY",
+}
 DT_NEEDED, DT_RPATH, DT_RUNPATH, DT_STRTAB, DT_STRSZ, DT_SONAME = 1, 15, 29, 5, 10, 14
 
 EM_NAMES = {
@@ -76,6 +85,7 @@ class ElfInfo:
     soname: str | None
     is_android: bool
     size: int
+    segments: tuple[str, ...] = ()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -113,6 +123,7 @@ def read_elf(path: str) -> ElfInfo | None:
         phdrs = fh.read(e_phentsize * e_phnum)
 
         interp = interp_off = interp_sz = None
+        segment_types: set[str] = set()
         dynamic: list[tuple[int, int]] = []
         is_android = False
         loads: list[tuple[int, int, int, int]] = []
@@ -122,6 +133,7 @@ def read_elf(path: str) -> ElfInfo | None:
             if base + e_phentsize > len(phdrs):
                 break
             p_type = struct.unpack_from(endian + "I", phdrs, base)[0]
+            segment_types.add(PT_NAMES.get(p_type, f"0x{p_type:x}"))
             if elf_class == ELFCLASS64:
                 p_offset, p_vaddr = struct.unpack_from(endian + "QQ", phdrs, base + 8)
                 p_filesz = struct.unpack_from(endian + "Q", phdrs, base + 32)[0]
@@ -184,6 +196,7 @@ def read_elf(path: str) -> ElfInfo | None:
                         soname = name(val)
 
         return ElfInfo(
+            segments=tuple(sorted(segment_types)),
             path=path,
             machine=EM_NAMES.get(machine_id, f"unknown-0x{machine_id:x}"),
             elf_class=elf_class,
@@ -321,6 +334,7 @@ def build_inventory(root: str, system: str) -> dict:
             "interp": info.interp,
             "needed": list(info.needed),
             "runpath": info.runpath,
+            "segments": info.segments,
         })
     entries.sort(key=lambda e: e["path"])
     counts: dict[str, int] = {}
@@ -356,12 +370,19 @@ def compare(baseline: dict, current: dict) -> list[str]:
     for path in sorted(set(old) - set(new)):
         problems.append(f"ELF file disappeared from the payload: {path}")
     for path in sorted(set(old) & set(new)):
-        for field in ("kind", "action", "machine", "etype"):
+        # interp and runpath are part of the reviewed shape: a payload that
+        # starts shipping a differently-linked binary, or one that gains an
+        # $ORIGIN lookup, has changed in a way a human should see.
+        for field in ("kind", "action", "machine", "etype", "interp", "runpath"):
             if old[path][field] != new[path][field]:
                 problems.append(
                     f"{path}: {field} changed {old[path][field]!r} -> "
                     f"{new[path][field]!r}"
                 )
+        if sorted(old[path].get("segments", [])) != sorted(new[path].get("segments", [])):
+            problems.append(
+                f"{path}: program segments changed "
+                f"{old[path].get('segments')} -> {new[path].get('segments')}")
         if sorted(old[path]["needed"]) != sorted(new[path]["needed"]):
             added = sorted(set(new[path]["needed"]) - set(old[path]["needed"]))
             removed = sorted(set(old[path]["needed"]) - set(new[path]["needed"]))

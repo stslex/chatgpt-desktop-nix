@@ -419,6 +419,107 @@ class TestRelocation(ElfTempMixin):
         self.assertIn("detect-libc", str(ctx.exception))
 
 
+class TestSegmentProtection(ElfTempMixin):
+    """File-backed segments the section table does not describe are still live.
+
+    PT_LOAD is a mapping container and must not be treated as occupied — the
+    gap we want is inside one. Every other file-backed segment points at one
+    specific structure, and a payload can legitimately carry one with a
+    zero-valued body and no section header. A GNU-property region shaped
+    exactly like that was selected as free and overwritten.
+    """
+
+    def build_with_segment(self, p_type: int, size: int = 128):
+        long_interp = (b"/nix/store/" + b"z" * 32 +
+                       b"-glibc/lib/ld-linux-x86-64.so.2\0")
+        data = bytearray(build_elf(interp=long_interp, interp_offset=6000,
+                                   total_size=16384, filler=0x58))
+        e_phnum = struct.unpack_from("<H", data, 56)[0]
+        base = 64 + e_phnum * 56
+        offset = ((64 + (e_phnum + 1) * 56) + 7) & ~7
+        struct.pack_into("<II", data, base, p_type, 4)
+        struct.pack_into("<QQQ", data, base + 8, offset, offset, offset)
+        struct.pack_into("<QQQ", data, base + 32, size, size, 8)
+        struct.pack_into("<H", data, 56, e_phnum + 1)
+        data[offset:offset + size] = b"\x00" * size
+        return self.write(bytes(data)), offset, size
+
+    def test_a_zero_valued_gnu_property_region_is_not_overwritten(self):
+        path, offset, size = self.build_with_segment(0x6474E553)
+        R.relocate(path, verbose=False)
+        with open(path, "rb") as fh:
+            fh.seek(offset)
+            self.assertEqual(fh.read(size), b"\x00" * size,
+                             "PT_GNU_PROPERTY data was overwritten")
+
+    def test_note_dynamic_and_tls_regions_are_protected(self):
+        for p_type, label in [(4, "PT_NOTE"), (2, "PT_DYNAMIC"), (7, "PT_TLS")]:
+            with self.subTest(segment=label):
+                path, offset, size = self.build_with_segment(p_type)
+                R.relocate(path, verbose=False)
+                with open(path, "rb") as fh:
+                    fh.seek(offset)
+                    self.assertEqual(fh.read(size), b"\x00" * size,
+                                     f"{label} data was overwritten")
+
+    def test_pt_load_is_still_treated_as_a_container(self):
+        # If PT_LOAD were counted as occupied, no relocation could ever happen.
+        long_interp = (b"/nix/store/" + b"y" * 32 +
+                       b"-glibc/lib/ld-linux-x86-64.so.2\0")
+        path = self.write(build_elf(interp=long_interp, interp_offset=6000,
+                                    total_size=16384))
+        report = R.relocate(path, verbose=False)
+        self.assertTrue(report["moved"])
+
+
+class TestMalformedElfIsRefused(ElfTempMixin):
+    def test_a_duplicate_pt_interp_is_refused(self):
+        long_interp = (b"/nix/store/" + b"w" * 32 +
+                       b"-glibc/lib/ld-linux-x86-64.so.2\0")
+        data = bytearray(build_elf(interp=long_interp, interp_offset=6000,
+                                   total_size=16384))
+        e_phnum = struct.unpack_from("<H", data, 56)[0]
+        base = 64 + e_phnum * 56
+        struct.pack_into("<II", data, base, 3, 4)          # a second PT_INTERP
+        struct.pack_into("<QQQ", data, base + 8, 6000, 6000, 6000)
+        struct.pack_into("<QQQ", data, base + 32, len(long_interp),
+                         len(long_interp), 1)
+        struct.pack_into("<H", data, 56, e_phnum + 1)
+        path = self.write(bytes(data))
+        with self.assertRaises(R.RelocationError) as ctx:
+            R.relocate(path, verbose=False)
+        self.assertIn("PT_INTERP segments", str(ctx.exception))
+
+    def test_a_segment_running_past_the_file_is_refused(self):
+        data = bytearray(build_elf(total_size=8192))
+        e_phnum = struct.unpack_from("<H", data, 56)[0]
+        base = 64 + e_phnum * 56
+        struct.pack_into("<II", data, base, 4, 4)
+        struct.pack_into("<QQQ", data, base + 8, 8000, 8000, 8000)
+        struct.pack_into("<QQQ", data, base + 32, 100000, 100000, 4)
+        struct.pack_into("<H", data, 56, e_phnum + 1)
+        path = self.write(bytes(data))
+        with self.assertRaises(R.RelocationError) as ctx:
+            R.relocate(path, verbose=False)
+        self.assertIn("past the", str(ctx.exception))
+
+    def test_a_program_header_table_past_the_file_is_refused(self):
+        data = bytearray(build_elf())
+        struct.pack_into("<H", data, 56, 4000)   # absurd phnum
+        path = self.write(bytes(data))
+        with self.assertRaises(R.RelocationError) as ctx:
+            R.relocate(path, verbose=False)
+        self.assertIn("past end of file", str(ctx.exception))
+
+    def test_a_section_header_table_past_the_file_is_refused(self):
+        data = bytearray(build_elf())
+        struct.pack_into("<Q", data, 40, 900000)   # e_shoff beyond the file
+        path = self.write(bytes(data))
+        with self.assertRaises(R.RelocationError) as ctx:
+            R.relocate(path, verbose=False)
+        self.assertIn("past end of file", str(ctx.exception))
+
+
 class TestRunpathMerging(unittest.TestCase):
     def setUp(self):
         import patch_elves
