@@ -153,9 +153,23 @@ inputs.chatgpt-desktop.url =
 
 ## Rolling back
 
-Every release is an immutable tag, `chatgpt-<upstream-version>-nix<N>`, and old
-tags are kept precisely so they remain usable as rollback pins. Tags are never
-moved or deleted.
+Every release is a tag, `chatgpt-<encoded-version>-nix<N>`, and old tags are
+kept precisely so they remain usable as rollback pins.
+
+**Where that immutability actually comes from.** The release workflow refuses to
+move or delete a tag: it fails if one already exists at a different commit, and
+it never force-pushes. That is a property of the workflow, not of the
+repository. Nothing at the GitHub level currently prevents someone with push
+access from deleting or re-pointing a `chatgpt-*` tag by hand.
+
+If you want it enforced by the platform rather than by convention, add a tag
+ruleset — Settings → Rules → Rulesets → New tag ruleset, target
+`chatgpt-*`, enable *Restrict updates* and *Restrict deletions*, with an empty
+bypass list. Until that exists, treat tag immutability as "the automation will
+not do it", not "it cannot happen".
+
+The version is percent-encoded into the tag rather than having its `:`, `~` and
+`+` mapped to `.`, so two upstream versions can never claim the same release.
 
 ```nix
 # Pin the previous known-good revision.
@@ -433,20 +447,61 @@ Do **not** grant Actions, Administration, Checks or any bypass permission.
 
 App settings → *Install App* → select **only** `stslex/chatgpt-desktop-nix`.
 
-### 3. Record its credentials
+### 3. Create the `updater` environment *first*
 
-- Generate a private key; it downloads a `.pem`.
-- Repository → Settings → Secrets and variables → Actions:
-  - **Variable** `UPDATER_APP_ID` = the App's numeric ID
-  - **Variable** `UPDATER_APP_SLUG` = the App's slug, e.g.
-    `chatgpt-desktop-nix-updater`
-  - **Secret** `UPDATER_APP_PRIVATE_KEY` = the whole `.pem`, including the
-    `-----BEGIN...` and `-----END...` lines
+Order matters here. The private key must never exist as a repository-wide
+secret, because a repository secret is readable by any workflow job, including
+one started from a branch someone dispatched by hand. Scoping it to an
+environment whose deployment policy admits only `main` is what makes
+"this key is only used by trusted default-branch code" true rather than
+merely intended.
 
-The private key is used only by the scheduled workflow, which runs from the
-protected default branch and never executes pull-request code.
+Settings → Environments → New environment → `updater`, then under
+**Deployment branches and tags** choose *Selected branches and tags* and add a
+rule for exactly `main`. Nothing else.
 
-### 4. Repository settings
+Only once that policy exists, add the key **to that environment**:
+
+Settings → Environments → `updater` → Environment secrets → Add secret
+
+- **Secret** `UPDATER_APP_PRIVATE_KEY` = the whole `.pem`, including the
+  `-----BEGIN...` and `-----END...` lines
+
+Adding it before the branch policy exists leaves a window in which a dispatch
+against any ref could read it.
+
+### 4. Record the App's public identifiers
+
+These are not secret and belong at repository scope:
+
+Settings → Secrets and variables → Actions → Variables
+
+- `UPDATER_APP_ID` = the App's numeric ID
+- `UPDATER_APP_SLUG` = the App's slug, e.g. `chatgpt-desktop-nix-updater`
+
+### What the App's key protects, and what it does not
+
+Be clear about this before installing anything.
+
+**The App's private key is a trust root for the contents of `main`.** It grants
+Contents read/write on this repository. Anyone holding it can push a branch and
+open a pull request; combined with the auto-merge path, that is a route into
+the protected branch.
+
+The `ci-ok` check does **not** independently contain a compromised key. It runs
+from the pull request's own head, so a `.github/` change in that head changes
+the very workflow that is supposed to be judging it. What actually constrains
+the automated path is the base-owned ruleset -- required check, zero bypass
+actors -- plus the changed-file policy and the eligibility checks, and those
+last two are themselves head-controlled code. Treat the key as
+confidentiality-critical, not as something the checks would catch.
+
+The App is deliberately limited to Metadata read, Contents read/write and Pull
+requests read/write. It has no Actions permission, no Administration, and no
+ruleset bypass, so it cannot alter workflows, disable checks, or merge past a
+failing one.
+
+### 5. Repository settings
 
 Settings → General → Pull Requests:
 
@@ -455,7 +510,7 @@ Settings → General → Pull Requests:
 - Allow auto-merge — **on**
 - Automatically delete head branches — **on**
 
-### 5. Protect the default branch
+### 6. Protect the default branch
 
 Do this **after** the first CI run has completed, so the required check name
 already exists and you cannot lock the repository against a check that has
@@ -476,7 +531,7 @@ Settings → Rules → Rulesets → New branch ruleset:
 - **Block force pushes** — on
 - Bypass list: **empty**. The updater App must not be able to bypass anything.
 
-### 6. Verify
+### 7. Verify
 
 ```sh
 gh workflow run "Upstream update" --repo stslex/chatgpt-desktop-nix

@@ -218,6 +218,29 @@ These are judgement calls, not measurements.
 
 ---
 
+### The interpreter target region
+
+Measured on the real binary after `patchelf --set-interpreter` and
+`--set-rpath`, and now pinned in `elf-baseline/interp-region-<system>.json`:
+
+| | x86_64 | aarch64 |
+| --- | --- | --- |
+| program headers | 16 × 56 at offset 64, ending 960 | same |
+| filler run | 960 … +209,160 | 960 … +208,896 |
+| filler byte | `0x58` throughout | `0x58` throughout |
+| containing `PT_LOAD` | index 1, off 0, vaddr 0, filesz 65,163,452, flags 4, align 4096 | index 1, off 0, vaddr 0, filesz 60,824,764, flags 4, align 65536 |
+| `PT_INTERP` segments | 1 | 1 |
+| sections/segments overlapping the run | none | none |
+
+The filler run contains **only** `0x58` — verified by enumerating the distinct
+byte values across it. That matters: `0x58` is what patchelf writes into space
+it has abandoned, so a run of it is positive evidence about provenance. A zero
+byte is not evidence of anything, and zeros occur inside live data.
+
+`0x00` was previously accepted as filler too. It is not any more.
+
+---
+
 ## Unverified — needs a real run
 
 - **The ARM64 CI job.** Until a run on `ubuntu-24.04-arm` goes green, aarch64
