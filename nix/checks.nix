@@ -148,6 +148,47 @@ in
       || grep -qE 'exec ".*/ChatGPT" "\$\{electron_args\[@\]\}" "\$@"' ${launcher}
 
     bash -n ${launcher}
+
+    echo "the package's own tools must actually be put on PATH"
+    # @preamble@ was once substituted into a comment, so this line existed but
+    # did nothing: the launcher relied entirely on the caller's PATH, and under
+    # a stripped environment basename and unshare were both missing -- making
+    # the namespace probe fail and the launcher report that namespaces were
+    # unavailable on a host where they were fine.
+    if ! grep -qE '^export PATH="/nix/store/[^"]*:\$PATH"$' ${launcher}; then
+      echo "the preamble PATH export is missing or commented out" >&2
+      grep -n 'PATH' ${launcher} >&2
+      exit 1
+    fi
+    for tool in coreutils util-linux; do
+      grep -qE "^export PATH=\"[^\"]*$tool" ${launcher} \
+        || { echo "$tool is not on the launcher's own PATH" >&2; exit 1; }
+    done
+  '';
+
+  launcher-runs-with-no-environment =
+    check "launcher-runs-with-no-environment" [ pkgs.coreutils ] ''
+    # The launcher must carry everything it needs. Running it under `env -i`
+    # proves it does not silently depend on the caller having coreutils,
+    # util-linux or anything else on PATH.
+    # Deliberately not named "out": that is Nix's output path, and shadowing it
+    # makes the wrapper's final `touch "$out"` land somewhere else.
+    reported="$(env -i ${launcher} --version 2>&1)" || {
+      echo "the launcher failed with an empty environment:" >&2
+      echo "$reported" >&2
+      exit 1
+    }
+    echo "$reported"
+    case "$reported" in
+      *"${chatgpt.version}"*) ;;
+      *) echo "unexpected --version output under env -i" >&2; exit 1 ;;
+    esac
+    case "$reported" in
+      *"command not found"*)
+        echo "a tool the launcher needs was missing from its own PATH" >&2
+        exit 1 ;;
+    esac
+    echo "launcher runs with an empty environment"
   '';
 
   # --- payload integrity --------------------------------------------------

@@ -16,7 +16,16 @@
 
 set -uo pipefail
 
-# @preamble@
+# The package's own tools, ahead of whatever the caller had. This must be a
+# real statement rather than a comment: everything below depends on it, and
+# with it commented out the script relied entirely on the caller's PATH -- so
+# under a stripped environment `basename` and `unshare` were both missing, and
+# the namespace probe failed, making the launcher report that namespaces were
+# unavailable on a host where they were fine.
+#
+# This prepends; the user's own PATH is appended to further down and is never
+# replaced.
+@preamble@
 
 self_name="$(basename "$0")"
 
