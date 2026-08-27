@@ -1,0 +1,281 @@
+name: CI
+
+# Runs for pull requests (including the automated update PRs), for trusted
+# pushes to the default branch, and in the merge queue if one is enabled.
+#
+# This workflow handles untrusted code from pull requests, so it takes no
+# secrets and holds only a read token. Nothing here can write to the
+# repository. `pull_request_target` is deliberately not used.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Re-derive the signed source metadata from OpenAI's repository. This
+  # deliberately does not trust the committed sources.json: it repeats the
+  # whole chain and then asserts the committed file is what the chain
+  # produces.
+  # ---------------------------------------------------------------------
+  verify-signed-sources:
+    name: Verify signed sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install gnupg
+        run: sudo apt-get update && sudo apt-get install -y gnupg
+
+      - name: Re-run the trust chain against the live origin
+        run: |
+          python3 tools/verify_sources.py --strict
+
+  # ---------------------------------------------------------------------
+  # The automated updater is only allowed to touch sources.json. This job
+  # enforces that for every pull request, so a compromised or buggy updater
+  # cannot smuggle a packaging change through the auto-merge path.
+  # ---------------------------------------------------------------------
+  changed-files-policy:
+    name: Changed-file policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Enforce the policy for automation branches
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          THIS_REPO: ${{ github.repository }}
+        run: |
+          python3 tools/check_changed_files.py \
+            --base "origin/$BASE_REF" \
+            --head-ref "$HEAD_REF" \
+            --head-repo "$HEAD_REPO" \
+            --this-repo "$THIS_REPO"
+
+  # ---------------------------------------------------------------------
+  # Fast, cheap gates that do not need a full package build.
+  # ---------------------------------------------------------------------
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install gnupg
+        run: sudo apt-get update && sudo apt-get install -y gnupg
+      - name: Run updater and ELF tests
+        run: PYTHONPATH="$PWD/tools:$PWD" python3 -m unittest discover -s tests -v
+
+  # ---------------------------------------------------------------------
+  # The real thing: build the package natively on every advertised system
+  # and run every check against the built output.
+  #
+  # aarch64-linux uses GitHub's native ARM64 runner. It is a real build on
+  # real hardware, not an emulated or evaluation-only stand-in. If that
+  # runner ever becomes unavailable, drop aarch64-linux from the flake's
+  # `systems` list rather than weakening this job.
+  # ---------------------------------------------------------------------
+  build:
+    name: Build ${{ matrix.system }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-24.04
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Free up disk space
+        run: |
+          # The payload is ~1.4 GB extracted and the .deb is ~400 MB.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - uses: cachix/install-nix-action@526118121621777ccd86f79b04685a9319637641 # v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            system-features = nixos-test benchmark big-parallel kvm
+
+      - name: Confirm the runner architecture matches the target
+        run: |
+          set -eu
+          actual="$(nix eval --raw --impure --expr 'builtins.currentSystem')"
+          if [ "$actual" != "${{ matrix.system }}" ]; then
+            echo "This job must build ${{ matrix.system }} natively, but the" >&2
+            echo "runner reports $actual. Refusing to cross-compile or" >&2
+            echo "emulate: an architecture is only advertised as supported" >&2
+            echo "when it is genuinely built on its own hardware." >&2
+            exit 1
+          fi
+          echo "native $actual builder confirmed"
+
+      - name: Build the package
+        run: nix build .#chatgpt -L --print-out-paths
+
+      - name: Run every check except the VM smoke test
+        run: |
+          set -eu
+          # The VM test needs KVM and is handled by its own job.
+          checks=$(nix flake show --json 2>/dev/null \
+            | python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)['checks']['${{ matrix.system }}']
+          print(' '.join(k for k in sorted(d) if k != 'vm-smoke'))")
+          echo "running: $checks"
+          for c in $checks; do
+            echo "::group::check $c"
+            nix build ".#checks.${{ matrix.system }}.$c" -L --no-link
+            echo "::endgroup::"
+          done
+
+      - name: Summarise the ELF inventory
+        run: |
+          out=$(nix build .#chatgpt --no-link --print-out-paths)
+          python3 -c "
+          import json
+          inv=json.load(open('$out/share/chatgpt-desktop/elf-inventory.json'))
+          rep=json.load(open('$out/share/chatgpt-desktop/elf-patch-report.json'))
+          print('ELF classes:', json.dumps(inv['counts'], indent=2))
+          print('patched programs:', len(rep['programs']))
+          print('patched libraries:', len(rep['libraries']))
+          print('left untouched:', len(rep['untouched']))
+          print('interpreter in detect-libc window:',
+                json.dumps(rep['interpreterInDetectLibcWindow'], indent=2))
+          " | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Collect diagnostics on failure
+        if: failure()
+        run: |
+          # Logs only. Never upload the OpenAI payload or the .deb.
+          mkdir -p diagnostics
+          nix log .#chatgpt > diagnostics/build.log 2>&1 || true
+          out=$(nix path-info .#chatgpt 2>/dev/null || true)
+          if [ -n "$out" ] && [ -d "$out/share/chatgpt-desktop" ]; then
+            cp "$out"/share/chatgpt-desktop/*.json diagnostics/ || true
+          fi
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: diagnostics-${{ matrix.system }}
+          path: diagnostics/
+          retention-days: 14
+
+  # ---------------------------------------------------------------------
+  # Bounded graphical start-up in a NixOS VM. Needs KVM, so it runs on its
+  # own x86_64 job.
+  # ---------------------------------------------------------------------
+  vm-smoke:
+    name: Graphical VM smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - name: Enable KVM for the test VM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -la /dev/kvm
+
+      - uses: cachix/install-nix-action@526118121621777ccd86f79b04685a9319637641 # v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            system-features = nixos-test benchmark big-parallel kvm
+
+      - name: Run the VM startup smoke test
+        run: nix build .#checks.x86_64-linux.vm-smoke -L --no-link
+
+      - name: Collect VM logs on failure
+        if: failure()
+        run: |
+          mkdir -p diagnostics
+          nix log .#checks.x86_64-linux.vm-smoke > diagnostics/vm.log 2>&1 || true
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: diagnostics-vm
+          path: diagnostics/
+          retention-days: 14
+
+  # ---------------------------------------------------------------------
+  # The single required status check.
+  #
+  # Branch protection points at this one job by name. Its name never
+  # changes, so the rules do not have to track matrix job names, and adding
+  # a matrix entry later cannot silently stop being required.
+  # ---------------------------------------------------------------------
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs:
+      - verify-signed-sources
+      - changed-files-policy
+      - unit-tests
+      - build
+      - vm-smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every gate to have succeeded
+        run: |
+          set -eu
+          # changed-files-policy is skipped outside pull requests; every other
+          # job must have succeeded. A skipped or cancelled required job counts
+          # as a failure so nothing merges on a partially-run pipeline.
+          failed=0
+          check() {
+            name="$1"; result="$2"; allow_skip="${3:-no}"
+            if [ "$result" = "success" ]; then
+              echo "  ok       $name"
+            elif [ "$result" = "skipped" ] && [ "$allow_skip" = "yes" ]; then
+              echo "  skipped  $name (not applicable to this event)"
+            else
+              echo "  FAILED   $name ($result)"
+              failed=1
+            fi
+          }
+          check verify-signed-sources '${{ needs.verify-signed-sources.result }}'
+          check changed-files-policy  '${{ needs.changed-files-policy.result }}' yes
+          check unit-tests            '${{ needs.unit-tests.result }}'
+          check build                 '${{ needs.build.result }}'
+          check vm-smoke              '${{ needs.vm-smoke.result }}'
+          if [ "$failed" -ne 0 ]; then
+            echo "one or more required gates did not pass" >&2
+            exit 1
+          fi
+          echo "all required gates passed"

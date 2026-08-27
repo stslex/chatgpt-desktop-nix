@@ -1,0 +1,250 @@
+name: Upstream update
+
+# Discovers new ChatGPT Desktop releases and opens a narrowly-scoped pull
+# request for them.
+#
+# This workflow is trusted: it runs only from the default branch and it holds
+# the updater App's private key. It never runs code from a pull request.
+#
+# The pull request is created with a GitHub App installation token rather than
+# GITHUB_TOKEN, because events created by GITHUB_TOKEN do not start further
+# workflow runs — a PR opened with it would sit forever with no CI, and
+# auto-merge would never have a required check to wait for.
+
+on:
+  schedule:
+    # 04:17 UTC daily. A non-round minute avoids the top-of-hour stampede that
+    # makes scheduled runs queue for a long time.
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      force_pr:
+        description: "Open a PR even if sources.json is already current"
+        type: boolean
+        default: false
+
+# Never run two updater passes at once, and never cancel one midway: a
+# cancelled run could leave a branch pushed with no pull request attached.
+concurrency:
+  group: upstream-update
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    name: Check for a new upstream release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      updated: ${{ steps.run.outputs.updated }}
+      version: ${{ steps.run.outputs.version }}
+      previous: ${{ steps.run.outputs.previous_version }}
+      branch: ${{ steps.run.outputs.branch }}
+      failure: ${{ steps.run.outputs.failure }}
+    steps:
+      - name: Mint an installation token for the updater App
+        id: app
+        uses: actions/create-github-app-token@67e27a7eb7db372a1c61a7f9bdab8699e9ee57f7 # v1.11.0
+        with:
+          app-id: ${{ vars.UPDATER_APP_ID }}
+          private-key: ${{ secrets.UPDATER_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+          token: ${{ steps.app.outputs.token }}
+          fetch-depth: 0
+
+      - name: Install gnupg
+        run: sudo apt-get update && sudo apt-get install -y gnupg
+
+      - name: Resolve and verify the current upstream release
+        id: run
+        env:
+          GITHUB_OUTPUT: ${{ github.output }}
+        run: |
+          set -o pipefail
+          # The updater writes sources.json only after the whole signed chain,
+          # including both .deb bodies, has verified.
+          set +e
+          python3 tools/update.py --github-output
+          status=$?
+          set -e
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+
+          case "$status" in
+            0) : ;;                       # current, or updated successfully
+            20) echo "trust verification failed" >&2 ;;
+            30) echo "upstream unavailable" >&2 ;;
+            *) echo "updater failed with status $status" >&2 ;;
+          esac
+
+          version="$(python3 -c 'import json;print(json.load(open("sources.json"))["version"])' 2>/dev/null || echo)"
+          sanitized="$(printf '%s' "$version" | tr -c 'A-Za-z0-9._-' '-')"
+          echo "branch=automation/chatgpt-$sanitized" >> "$GITHUB_OUTPUT"
+
+          if [ "$status" -ne 0 ]; then
+            exit "$status"
+          fi
+
+          if git diff --quiet -- sources.json; then
+            echo "sources.json is unchanged; nothing to do"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git --no-pager diff --stat -- sources.json
+          fi
+
+      - name: Confirm only sources.json changed
+        if: steps.run.outputs.changed == 'true'
+        run: |
+          set -eu
+          changed="$(git diff --name-only)"
+          if [ "$changed" != "sources.json" ]; then
+            echo "the updater modified more than sources.json:" >&2
+            echo "$changed" >&2
+            exit 1
+          fi
+          echo "only sources.json changed, as required"
+
+      - name: Push the automation branch and open one pull request
+        if: steps.run.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          BRANCH: ${{ steps.run.outputs.branch }}
+          VERSION: ${{ steps.run.outputs.version }}
+          PREVIOUS: ${{ steps.run.outputs.previous_version }}
+        run: |
+          set -eu
+          git config user.name "chatgpt-desktop-nix updater"
+          git config user.email "${{ vars.UPDATER_APP_ID }}+chatgpt-desktop-nix-updater[bot]@users.noreply.github.com"
+
+          git checkout -B "$BRANCH"
+          git add sources.json
+          git commit -m "chatgpt-desktop: $PREVIOUS -> $VERSION
+
+          Verified against OpenAI's signed APT repository:
+
+            * InRelease signature checked with gpgv against the committed key
+              3BFA0E4AE8B8CC16A2D9BA684A3B4A566C4660E4
+            * Packages.gz size and SHA-256 matched the signed Release
+            * both .deb bodies matched the size and SHA-256 in the signed index
+            * each .deb's debsigs _gpgorigin signature verified with the same key
+            * control Package, Version and Architecture matched the index
+            * amd64 and arm64 publish the same upstream version
+
+          Only sources.json is changed. Packaging code, workflows, ELF
+          baselines and flake.lock are untouched."
+
+          git push --force-with-lease origin "$BRANCH"
+
+          # One pull request per exact version. If a previous run already made
+          # one, reuse it instead of opening a duplicate.
+          existing="$(gh pr list --head "$BRANCH" --base main --state open \
+            --json number --jq '.[0].number' || true)"
+
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            echo "reusing existing pull request #$existing"
+            echo "PR_NUMBER=$existing" >> "$GITHUB_ENV"
+          else
+            gh label create "automated-upstream-update" \
+              --description "Opened by the signed updater; only sources.json" \
+              --color 0e8a16 2>/dev/null || true
+
+            url="$(gh pr create \
+              --base main --head "$BRANCH" \
+              --title "chatgpt-desktop: $PREVIOUS -> $VERSION" \
+              --label "automated-upstream-update" \
+              --body "Automated upstream update, opened by the signed updater.
+
+          **Version:** \`$PREVIOUS\` → \`$VERSION\`
+
+          Every check below was performed before this pull request was opened,
+          and CI repeats all of it independently rather than trusting the JSON
+          in this diff.
+
+          | Step | Result |
+          | --- | --- |
+          | \`InRelease\` signature (pinned key \`3BFA0E4A…60E4\`) | verified |
+          | \`Packages.gz\` size + SHA-256 vs signed \`Release\` | verified |
+          | \`.deb\` size + SHA-256 vs signed index (both arches) | verified |
+          | debsigs \`_gpgorigin\` signature (both arches) | verified |
+          | control \`Package\`/\`Version\`/\`Architecture\` | verified |
+          | \`amd64\` and \`arm64\` at the same version | verified |
+          | downgrade check | passed |
+          | same-version digest drift check | passed |
+
+          Only \`sources.json\` changes here. Auto-merge is enabled; the
+          required \`ci-ok\` check decides whether this lands.
+
+          If CI fails, this pull request stays open and the protected branch and
+          the latest release are untouched.")"
+
+            # gh prints the new pull request's URL; the number is its last path
+            # component.
+            number="${url##*/}"
+            if ! printf '%s' "$number" | grep -qE '^[0-9]+$'; then
+              echo "could not determine the pull request number from: $url" >&2
+              exit 1
+            fi
+            echo "opened pull request #$number"
+            echo "PR_NUMBER=$number" >> "$GITHUB_ENV"
+          fi
+
+      - name: Verify eligibility, then enable auto-merge
+        if: steps.run.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          BRANCH: ${{ steps.run.outputs.branch }}
+          VERSION: ${{ steps.run.outputs.version }}
+          EXPECTED_APP_SLUG: ${{ vars.UPDATER_APP_SLUG }}
+        run: |
+          set -eu
+          python3 tools/check_automerge_eligible.py \
+            --repo "${{ github.repository }}" \
+            --pr "$PR_NUMBER" \
+            --expected-branch "$BRANCH" \
+            --expected-base main \
+            --expected-version "$VERSION" \
+            --expected-label automated-upstream-update \
+            --expected-author "${EXPECTED_APP_SLUG:-chatgpt-desktop-nix-updater}[bot]"
+
+          gh pr merge "$PR_NUMBER" --squash --auto
+          echo "auto-merge enabled; the required ci-ok check decides from here"
+
+  # -------------------------------------------------------------------
+  # One deduplicated issue per upstream version that fails, so a daily
+  # retry of the same broken candidate does not create issue spam.
+  # -------------------------------------------------------------------
+  report-failure:
+    name: Report a failed candidate
+    needs: update
+    if: failure()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Mint an installation token
+        id: app
+        uses: actions/create-github-app-token@67e27a7eb7db372a1c61a7f9bdab8699e9ee57f7 # v1.11.0
+        with:
+          app-id: ${{ vars.UPDATER_APP_ID }}
+          private-key: ${{ secrets.UPDATER_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+
+      - name: Open or update the issue for this version
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          VERSION: ${{ needs.update.outputs.version }}
+          KIND: ${{ needs.update.outputs.failure }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 tools/report_failure.py \
+            --repo "${{ github.repository }}" \
+            --version "${VERSION:-unknown}" \
+            --kind "${KIND:-unknown}" \
+            --run-url "$RUN_URL"

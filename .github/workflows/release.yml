@@ -1,0 +1,192 @@
+name: Release
+
+# Publishes a source-only release after a trusted push to the protected default
+# branch. Release tags are immutable: an existing tag is never moved or
+# deleted, and a tag that already points somewhere else is a hard failure.
+#
+# No OpenAI binary is ever attached to a release. The .deb and the repacked
+# application are not ours to redistribute; consumers fetch them from OpenAI at
+# build time, verified against the signed metadata in sources.json.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sources.json"
+      - "nix/**"
+      - "tools/**"
+      - "flake.nix"
+      - "flake.lock"
+      - "elf-baseline/**"
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: Repeat the release-critical gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      sha: ${{ steps.version.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # Pin to the exact commit that was pushed, not to whatever main
+          # points at by the time this job starts.
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+
+      - uses: cachix/install-nix-action@526118121621777ccd86f79b04685a9319637641 # v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            system-features = nixos-test benchmark big-parallel kvm
+
+      - name: Install gnupg
+        run: sudo apt-get update && sudo apt-get install -y gnupg
+
+      - name: Derive the version from verified repository metadata
+        id: version
+        run: |
+          set -eu
+          version="$(python3 -c 'import json;print(json.load(open("sources.json"))["version"])')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+          # Immutable tag: chatgpt-<upstream-version>-nix<N>. N increments for
+          # packaging-only revisions of the same upstream version.
+          n=1
+          while git rev-parse -q --verify "refs/tags/chatgpt-$version-nix$n" >/dev/null; do
+            existing="$(git rev-parse "refs/tags/chatgpt-$version-nix$n^{commit}")"
+            if [ "$existing" = "${{ github.sha }}" ]; then
+              echo "tag chatgpt-$version-nix$n already points at this commit"
+              echo "tag=chatgpt-$version-nix$n" >> "$GITHUB_OUTPUT"
+              echo "exists=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            n=$((n + 1))
+          done
+          echo "tag=chatgpt-$version-nix$n" >> "$GITHUB_OUTPUT"
+          echo "exists=false" >> "$GITHUB_OUTPUT"
+          echo "will tag as chatgpt-$version-nix$n"
+
+      - name: Re-verify the signed sources independently
+        run: python3 tools/verify_sources.py --strict
+
+      - name: Build and check
+        run: |
+          nix build .#chatgpt -L --print-out-paths
+          nix flake check -L
+
+  release:
+    name: Tag and publish
+    needs: gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Refuse to move an existing tag
+        env:
+          TAG: ${{ needs.gate.outputs.tag }}
+        run: |
+          set -eu
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            existing="$(git rev-parse "refs/tags/$TAG^{commit}")"
+            if [ "$existing" != "${{ needs.gate.outputs.sha }}" ]; then
+              echo "tag $TAG already exists at $existing, which is not the" >&2
+              echo "commit being released (${{ needs.gate.outputs.sha }})." >&2
+              echo "Release tags are immutable and are never moved." >&2
+              exit 1
+            fi
+            echo "$TAG already points at this commit; nothing to create"
+          fi
+
+      - name: Create the immutable tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.gate.outputs.tag }}
+          VERSION: ${{ needs.gate.outputs.version }}
+        run: |
+          set -eu
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "tag exists and matches; skipping creation"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "ChatGPT Desktop $VERSION (Nix packaging revision)"
+          git push origin "refs/tags/$TAG"
+
+      - name: Publish a source-only release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.gate.outputs.tag }}
+          VERSION: ${{ needs.gate.outputs.version }}
+        run: |
+          set -eu
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists; leaving it untouched"
+            exit 0
+          fi
+
+          # Source only. No .deb, no repacked application, no binaries.
+          gh release create "$TAG" \
+            --title "ChatGPT Desktop $VERSION" \
+            --notes "Packaging for ChatGPT Desktop \`$VERSION\`.
+
+          Consume this exact revision by pinning the tag:
+
+          \`\`\`nix
+          inputs.chatgpt-desktop.url =
+            \"github:${{ github.repository }}/$TAG\";
+          \`\`\`
+
+          Or roll back to it if a later version misbehaves — older tags are kept
+          precisely so they stay usable as rollback pins.
+
+          **This release contains no binaries.** ChatGPT Desktop is proprietary
+          OpenAI software and is not redistributed here. Building this flake
+          downloads it from OpenAI's official signed APT repository and verifies
+          it against the metadata in \`sources.json\`, which is itself derived
+          from a \`gpgv\`-verified \`InRelease\`.
+
+          Verified for this revision:
+
+          | | |
+          | --- | --- |
+          | Upstream version | \`$VERSION\` |
+          | Signing key | \`3BFA0E4AE8B8CC16A2D9BA684A3B4A566C4660E4\` |
+          | Systems built natively | \`x86_64-linux\`, \`aarch64-linux\` |
+          | \`app.asar\` | byte-identical to upstream |
+          "
+
+      - name: Summarise
+        run: |
+          {
+            echo "### Released ${{ needs.gate.outputs.tag }}"
+            echo
+            echo "- upstream version: \`${{ needs.gate.outputs.version }}\`"
+            echo "- commit: \`${{ needs.gate.outputs.sha }}\`"
+            echo "- source-only; no OpenAI binaries attached"
+          } >> "$GITHUB_STEP_SUMMARY"

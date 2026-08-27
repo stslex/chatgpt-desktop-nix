@@ -143,7 +143,7 @@ in
     sys.path.insert(0, "${chatgpt.toolsDir}")
 
     report = json.load(open(
-        "${app}/../../share/chatgpt-desktop/elf-patch-report.json"))
+        "${chatgpt}/share/chatgpt-desktop/elf-patch-report.json"))
     patched = set(report["programs"]) | set(report["libraries"])
 
     up_root = "upstream/usr/lib/chatgpt"
@@ -201,7 +201,7 @@ in
     sys.path.insert(0, "${chatgpt.toolsDir}")
     import elf_classify as C
     baseline = json.load(open("${../elf-baseline}/${system}.json"))
-    shipped = json.load(open("${app}/../../share/chatgpt-desktop/elf-inventory.json"))
+    shipped = json.load(open("${chatgpt}/share/chatgpt-desktop/elf-inventory.json"))
     problems = C.compare(baseline, shipped)
     if problems:
         for p in problems:
@@ -218,17 +218,44 @@ in
     python3 ${chatgpt.toolsDir}/relocate_interp.py ${app}/ChatGPT \
       --verify-only --require-glibc-detection
 
-    echo "and every other patched program must load too"
+    echo "and each program's window status must match the reviewed expectation"
     python3 - <<'PY'
     import json, sys
     sys.path.insert(0, "${chatgpt.toolsDir}")
     import relocate_interp as R
-    report = json.load(open("${app}/../../share/chatgpt-desktop/elf-patch-report.json"))
-    for rel in report["programs"]:
+
+    report = json.load(open(
+        "${chatgpt}/share/chatgpt-desktop/elf-patch-report.json"))
+    expected = json.load(open("${../elf-baseline}/interp-window-${system}.json"))
+    actual = report["interpreterInDetectLibcWindow"]
+
+    # Not every binary can be relocated. patchelf packs .dynamic and .dynstr
+    # into the whole first 2 KiB of the bundled Node, leaving no unreferenced
+    # range to move the interpreter into, so that one keeps patchelf's
+    # placement. It still runs correctly; only its own detect-libc self-probe
+    # is inconclusive. What must not change silently is *which* binaries are in
+    # which state, so that is pinned here.
+    if actual != expected:
+        print("interpreter-window status changed:", file=sys.stderr)
+        for path in sorted(set(expected) | set(actual)):
+            if expected.get(path) != actual.get(path):
+                print(f"  - {path}: expected {expected.get(path)}, "
+                      f"got {actual.get(path)}", file=sys.stderr)
+        sys.exit(1)
+
+    main = "usr/lib/chatgpt/ChatGPT"
+    if not actual.get(main):
+        print(f"{main} must be inside the window", file=sys.stderr)
+        sys.exit(1)
+
+    for rel, ok in sorted(actual.items()):
         path = "${chatgpt}/lib/chatgpt" + rel.split("usr/lib/chatgpt", 1)[1]
         elf = R.Elf64(path)
-        R.assert_within_window(elf, R.DETECT_LIBC_WINDOW, "shipped package")
-        print(f"  {rel}: PT_INTERP at {elf.phdr(elf.interp_index())['p_offset']}")
+        offset = elf.phdr(elf.interp_index())["p_offset"]
+        state = "in window" if ok else "outside window (expected)"
+        print(f"  {rel}: PT_INTERP at {offset} — {state}")
+        if ok:
+            R.assert_within_window(elf, R.DETECT_LIBC_WINDOW, "shipped package")
     PY
   '';
 
@@ -238,7 +265,7 @@ in
     echo "every patched ELF must resolve all of its DT_NEEDED entries"
     python3 - <<'PY'
     import json, subprocess, sys, os
-    report = json.load(open("${app}/../../share/chatgpt-desktop/elf-patch-report.json"))
+    report = json.load(open("${chatgpt}/share/chatgpt-desktop/elf-patch-report.json"))
     root = "${chatgpt}/lib/chatgpt"
     failures = []
     for rel in report["programs"] + report["libraries"]:
@@ -259,7 +286,7 @@ in
     echo "untouched files must really be untouched"
     python3 - <<'PY'
     import json
-    report = json.load(open("${app}/../../share/chatgpt-desktop/elf-patch-report.json"))
+    report = json.load(open("${chatgpt}/share/chatgpt-desktop/elf-patch-report.json"))
     assert report["untouched"], "expected some files to be left alone"
     print(f"{len(report['untouched'])} files left byte-identical")
     PY
@@ -284,7 +311,7 @@ in
     echo "we must not have pulled in both Qt 5 and Qt 6 for optional shims"
     python3 - <<'PY'
     import json, sys
-    inv = json.load(open("${app}/../../share/chatgpt-desktop/elf-inventory.json"))
+    inv = json.load(open("${chatgpt}/share/chatgpt-desktop/elf-inventory.json"))
     shims = [e for e in inv["entries"] if e["kind"] == "optional-qt-shim"]
     assert shims, "expected the Qt keyring shims to be present and classified"
     for shim in shims:
@@ -336,7 +363,7 @@ in
       if (buf.readUInt32LE(base) !== 3) continue;
       const off = Number(buf.readBigUInt64LE(base + 8));
       const size = Number(buf.readBigUInt64LE(base + 32));
-      const s = buf.subarray(off, off + size).toString('utf8').replace(/\0.*$/, '');
+      const s = buf.subarray(off, off + size).toString('utf8').replace(/\0.*$/, "");
       if (s.includes('/ld-musl-')) result = 'musl';
       else if (s.includes('/ld-linux-')) result = 'glibc';
       break;
@@ -465,6 +492,9 @@ in
     test -f ${chatgpt}/share/pixmaps/chatgpt.png
     test -f ${chatgpt}/share/icons/hicolor/512x512/apps/chatgpt.png
   '';
+
+  # A real graphical start-up in a NixOS VM. Slow, so it is the last check.
+  vm-smoke = import ./vm-test.nix { inherit pkgs chatgpt; };
 
   no-upstream-host-config = check "no-upstream-host-config" [ ] ''
     echo "we must not ship the upstream APT or AppArmor configuration"
