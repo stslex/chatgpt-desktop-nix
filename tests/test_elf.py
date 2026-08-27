@@ -15,6 +15,7 @@ were observed on the real payload:
 from __future__ import annotations
 
 import os
+import copy
 import struct
 import tempfile
 import unittest
@@ -598,6 +599,36 @@ class TestRegionInvariant(ElfTempMixin):
                     R.relocate(self.build(), verbose=False, expect_region=bad)
                 self.assertIn("invariant no longer holds", str(ctx.exception))
 
+    def test_the_search_window_never_grows_past_the_reviewed_extent(self):
+        # A longer filler run than recorded is legitimate -- a bigger store
+        # path vacates more -- and is accepted. But the tuple this returns
+        # becomes the trusted search window, and searching bytes nobody
+        # reviewed defeats the point of pinning a region at all. The reviewed
+        # length is what was established; clamp to it.
+        path = self.build()
+        elf = R.Elf64(path)
+        region = R.describe_target_region(elf)
+        shrunk = copy.deepcopy(region)
+        shrunk["fillerLength"] = region["fillerLength"] // 2
+        self.assertGreater(region["fillerLength"], shrunk["fillerLength"])
+
+        start, length = R.assert_region_invariant(elf, shrunk)
+        self.assertEqual(start, region["fillerStart"])
+        self.assertEqual(
+            length, shrunk["fillerLength"],
+            "the search window grew past the reviewed extent")
+
+    def test_a_shorter_run_than_reviewed_is_still_refused(self):
+        # Clamping must not turn the shortness check into a no-op: a run
+        # shorter than reviewed means patchelf laid the file out differently.
+        path = self.build()
+        elf = R.Elf64(path)
+        grown = copy.deepcopy(R.describe_target_region(elf))
+        grown["fillerLength"] += 10 ** 6
+        with self.assertRaises(R.RelocationError) as ctx:
+            R.assert_region_invariant(elf, grown)
+        self.assertIn("shorter than the reviewed", str(ctx.exception))
+
     def test_zero_padding_is_no_longer_treated_as_filler(self):
         # A zero byte is not evidence of anything; only patchelf's own 0x58 is.
         self.assertNotIn(0x00, R.FILLER_BYTES)
@@ -626,6 +657,52 @@ class TestStructuralValidation(ElfTempMixin):
         with self.assertRaises(R.RelocationError) as ctx:
             R.Elf64(path).validate_sections()
         self.assertIn("name table", str(ctx.exception))
+
+    def test_a_section_overlapping_the_program_header_table_is_refused(self):
+        # occupied_ranges() is built from the section table and is what proves
+        # a byte range is unclaimed. A table that puts a section on top of the
+        # program headers is structurally impossible, and accepting it makes
+        # that proof worthless.
+        data = bytearray(build_elf())
+        e_shoff = struct.unpack_from("<Q", data, 40)[0]
+        base = e_shoff + 64
+        struct.pack_into("<I", data, base + 4, 1)      # SHT_PROGBITS
+        struct.pack_into("<Q", data, base + 24, 64)    # sh_offset -> the PHT
+        struct.pack_into("<Q", data, base + 32, 300)   # sh_size
+        path = self.write(bytes(data))
+        with self.assertRaises(R.RelocationError) as ctx:
+            R.Elf64(path).validate_sections()
+        self.assertIn("overlap", str(ctx.exception))
+        self.assertIn("program header table", str(ctx.exception))
+
+    def test_two_overlapping_sections_are_refused(self):
+        data = bytearray(build_elf())
+        e_shoff = struct.unpack_from("<Q", data, 40)[0]
+        for index, (off, size) in enumerate(((2048, 512), (2200, 512)), start=1):
+            base = e_shoff + 64 * index
+            struct.pack_into("<I", data, base + 4, 1)
+            struct.pack_into("<Q", data, base + 24, off)
+            struct.pack_into("<Q", data, base + 32, size)
+        path = self.write(bytes(data))
+        with self.assertRaises(R.RelocationError) as ctx:
+            R.Elf64(path).validate_sections()
+        self.assertIn("overlap", str(ctx.exception))
+
+    def test_a_section_overlapping_the_elf_header_is_refused(self):
+        data = bytearray(build_elf())
+        e_shoff = struct.unpack_from("<Q", data, 40)[0]
+        base = e_shoff + 64
+        struct.pack_into("<I", data, base + 4, 1)
+        struct.pack_into("<Q", data, base + 24, 0)
+        struct.pack_into("<Q", data, base + 32, 32)
+        path = self.write(bytes(data))
+        with self.assertRaises(R.RelocationError) as ctx:
+            R.Elf64(path).validate_sections()
+        self.assertIn("ELF header", str(ctx.exception))
+
+    def test_a_well_formed_file_is_still_accepted(self):
+        # The overlap rule must not reject ordinary binaries.
+        R.Elf64(self.write(build_elf())).validate_sections()
 
     def test_the_classifier_refuses_a_truncated_program_header_table(self):
         data = bytearray(build_elf())

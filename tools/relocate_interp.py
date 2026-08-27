@@ -197,6 +197,40 @@ class Elf64:
                     f"{self.path}: section {i} name offset {sh['sh_name']} is "
                     f"outside the {strtab_size}-byte name table")
 
+        # No two file-backed regions may claim the same byte.
+        #
+        # In-range is not the same as well-formed. A section table can put two
+        # sections on top of each other, or a section on top of the ELF header,
+        # the program header table or the section header table -- all of which
+        # are structurally impossible in a real binary and all of which were
+        # accepted here. That matters because occupied_ranges() is built from
+        # this table and is what proves a candidate byte range is unclaimed: a
+        # table that lies about what it covers makes that proof worthless.
+        claims: list[tuple[int, int, str]] = [
+            (0, 64, "the ELF header"),
+        ]
+        if self.e_phnum:
+            claims.append((self.e_phoff, self.e_phoff + self.e_phnum * 56,
+                           "the program header table"))
+        if self.e_shnum:
+            claims.append((self.e_shoff, self.e_shoff + self.e_shnum * 64,
+                           "the section header table"))
+        for i in range(self.e_shnum):
+            sh = self.section_header(i)
+            if sh["sh_type"] == SHT_NOBITS or sh["sh_size"] == 0:
+                continue
+            claims.append((sh["sh_offset"], sh["sh_offset"] + sh["sh_size"],
+                           f"section {i} ({self.section_name(i)!r})"))
+
+        claims.sort()
+        for (a_start, a_end, a_what), (b_start, b_end, b_what) in zip(
+                claims, claims[1:]):
+            if b_start < a_end:
+                raise RelocationError(
+                    f"{self.path}: {a_what} spans [{a_start}, {a_end}) and "
+                    f"{b_what} spans [{b_start}, {b_end}); they overlap, so "
+                    f"the section table does not describe a well-formed file")
+
     def set_section_location(self, index: int, *, sh_addr: int, sh_offset: int,
                              sh_size: int) -> None:
         base = self._sh_base(index)
@@ -435,7 +469,15 @@ def assert_region_invariant(elf: Elf64, expected: dict) -> tuple[int, int]:
             "Re-establish the invariant by hand and commit it."
         )
 
-    return actual["fillerStart"], actual["fillerLength"]
+    # Hand back the REVIEWED extent, not the observed one.
+    #
+    # The run may legitimately be longer than recorded, and that is fine as a
+    # sanity check -- but this tuple becomes the trusted search window, and
+    # searching bytes beyond what was reviewed defeats the point of pinning a
+    # region at all. The reviewed length was enough when it was established, so
+    # clamp to it.
+    reviewed = expected.get("fillerLength", 0)
+    return actual["fillerStart"], min(actual["fillerLength"], reviewed)
 
 
 def find_free_range(elf: Elf64, need: int, window: int,

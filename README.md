@@ -445,12 +445,26 @@ The App needs only **Metadata: read**, **Contents: read/write** and **Pull
 requests: read/write**. It is deliberately given no Actions, Administration or
 ruleset-bypass permission, so it cannot merge past a failing check.
 
-Before auto-merge is enabled, eleven properties are read back from the API and
-compared against expectations: App identity, base branch, same-repository head,
-exact branch pattern, label, changed-file allowlist, nothing under `.github/`,
-no packaging or `flake.lock` change, a Debian-ordered version increase, and the
-head SHA still matching the verified candidate. Any failure leaves the pull
-request open for a human.
+Before auto-merge is enabled, **thirteen** properties are read back from the API
+and compared against expectations:
+
+1. the author is the updater App
+2. the base is the protected branch
+3. the head is in this repository, never a fork
+4. the branch matches the exact `automation/chatgpt-<version>` pattern
+5. the automated-update label is present
+6. `sources.json` is the only file changed
+7. nothing under `.github/` is touched
+8. no packaging code, `flake.lock` or test is touched
+9. the pull request is open
+10. it is not a draft
+11. the head SHA still matches the verified candidate
+12. the diff actually contains the verified version
+13. the candidate version is newer than the base branch, by Debian ordering
+
+Any failure leaves the pull request open for a human. The list is kept honest by
+a check that reads the names out of `tools/check_automerge_eligible.py` and
+fails the build if this section drifts from them.
 
 Ordinary feature, dependency and documentation pull requests are never
 auto-merged by this mechanism.

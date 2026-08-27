@@ -284,6 +284,68 @@ in
     fi
   '';
 
+  # Prose about what a gate checks is worth exactly as much as its agreement
+  # with the gate. The README used to claim "eleven properties" over a list of
+  # ten, while the script performed thirteen -- so two real checks went
+  # undocumented and the count matched neither.
+  automerge-claims-match = check "automerge-claims-match" [ pkgs.python3 ] ''
+    cp -r ${../tools} tools
+    cp ${../README.md} README.md
+    chmod -R u+w .
+    python3 - <<'PY'
+    import ast, re, sys
+
+    src = open("tools/check_automerge_eligible.py", encoding="utf-8").read()
+    names = []
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "record":
+            first = node.args[0]
+            if isinstance(first, ast.Constant) and first.value not in names:
+                names.append(first.value)
+
+    readme = open("README.md", encoding="utf-8").read()
+    stated = re.search(r"Before auto-merge is enabled, \*\*(\w+)\*\* properties",
+                       readme)
+    if not stated:
+        sys.exit("README no longer states how many properties are checked")
+
+    words = {"ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
+             "fourteen": 14, "fifteen": 15, "sixteen": 16}
+    claimed = words.get(stated.group(1))
+    if claimed is None:
+        sys.exit(f"unrecognised count word {stated.group(1)!r} in README")
+
+    problems = []
+    if claimed != len(names):
+        problems.append(
+            f"README claims {claimed} properties; the script performs "
+            f"{len(names)}")
+
+    numbered = re.findall(r"^\s*\d+\. (.+)$", readme, re.M)
+    if len(numbered) < len(names):
+        problems.append(
+            f"README lists {len(numbered)} numbered items for {len(names)} "
+            f"checks")
+
+    # Every check must be recognisable in the prose. Match on the distinctive
+    # words rather than the whole sentence, so wording may differ.
+    listed = " ".join(numbered).lower()
+    for name in names:
+        keywords = [w for w in re.findall(r"[a-z.<>/_-]{4,}", name.lower())
+                    if w not in {"the", "that", "with", "from"}]
+        if not any(k in listed for k in keywords):
+            problems.append(f"check {name!r} is not described in the README")
+
+    if problems:
+        print("the README and the eligibility script disagree:", file=sys.stderr)
+        for p in problems:
+            print("  -", p, file=sys.stderr)
+        sys.exit(1)
+
+    print(f"README documents all {len(names)} eligibility checks")
+    PY
+  '';
+
   # --- payload integrity --------------------------------------------------
 
   asar-identity = check "asar-identity" [ pkgs.python3 pkgs.dpkg pkgs.curl ] ''
