@@ -230,6 +230,13 @@ jobs:
           # Starting the application is a different matter, and what the
           # launcher should do depends on this host. Ask the kernel, then
           # require the launcher to agree with the answer.
+          #
+          # Note the position of this step: it runs BEFORE the graphical gate
+          # below lifts kernel.apparmor_restrict_unprivileged_userns, so on
+          # GitHub's runners it takes the "restricted" branch and actually
+          # exercises the refusal. Both branches are correct, so reordering
+          # would not turn the job red -- it would just quietly stop testing
+          # the refusal path. Keep this ahead of the lift.
           if unshare --user --map-root-user true 2>/dev/null; then
             echo "this runner has unprivileged user namespaces;"
             echo "the graphical smoke job covers actually starting the app"
