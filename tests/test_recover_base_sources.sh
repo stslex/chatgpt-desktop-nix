@@ -168,5 +168,68 @@ else
 fi
 rm -rf "$root"
 
+echo "== a DIRECTORY named sources.json is REFUSED, not read as metadata =="
+# `git show` on a tree prints a listing, and that listing would have been
+# written out and compared as though it were the base metadata.
+root="$(mktemp -d)"
+git init -q "$root/work"
+(
+    cd "$root/work"
+    git config user.email t@t; git config user.name t
+    git checkout -q -b main
+    mkdir -p sources.json && printf 'inner\n' > sources.json/inner.txt
+    printf 'x\n' > flake.nix
+    git add -A; git commit -q -m base
+    git update-ref refs/remotes/origin/main HEAD
+)
+outp="$( cd "$root/work" && bash "$SCRIPT" main out.json 2>&1 )"
+if printf '%s' "$outp" | grep -q 'bootstrap=false'; then
+    bad "directory named sources.json" \
+        "accepted a tree as the base metadata; out.json would hold a git
+     listing, not JSON"
+elif printf '%s' "$outp" | grep -q 'is a tree, not a file'; then
+    ok "a directory named sources.json -> refused"
+else
+    bad "directory named sources.json" "unexpected: $outp"
+fi
+rm -rf "$root"
+
+echo "== a marker whose listing FAILS must not be read as absent =="
+# Writing the marker test as [ -n "$(git ls-tree ...)" ] reads a failed listing
+# as an absent marker: git's error goes to stderr, the substitution is empty,
+# and the loop concludes the base carries no packaging -- reporting a bootstrap
+# for a broken object store, which switches the version policy off.
+root="$(mktemp -d)"
+git init -q "$root/work"
+(
+    cd "$root/work"
+    git config user.email t@t; git config user.name t
+    git checkout -q -b main
+    mkdir -p nix && printf 'x\n' > nix/package.nix
+    printf 'y\n' > README
+    git add -A; git commit -q -m base
+    git update-ref refs/remotes/origin/main HEAD
+    # Remove the tree object for nix/, so listing nix/package.nix fails.
+    sub="$(git rev-parse 'HEAD:nix')"
+    rm -f ".git/objects/${sub:0:2}/${sub:2}"
+)
+# Assert the fixture is in the state being tested.
+if ( cd "$root/work" && git ls-tree --full-tree origin/main -- nix/package.nix ) \
+        >/dev/null 2>&1; then
+    bad "unreadable marker" "fixture broken: the marker listing still succeeds"
+else
+    outp="$( cd "$root/work" && bash "$SCRIPT" main out.json 2>&1 )"
+    if printf '%s' "$outp" | grep -q 'bootstrap=true'; then
+        bad "unreadable marker" \
+            "reported a bootstrap while a marker listing was failing, which
+     disables the downgrade and drift rules"
+    elif printf '%s' "$outp" | grep -q 'refusing to draw'; then
+        ok "an unreadable marker -> refused as indeterminate"
+    else
+        bad "unreadable marker" "unexpected: $outp"
+    fi
+fi
+rm -rf "$root"
+
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

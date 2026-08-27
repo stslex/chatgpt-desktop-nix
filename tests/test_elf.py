@@ -712,6 +712,41 @@ class TestStructuralValidation(ElfTempMixin):
             R.Elf64(path).validate_sections()
         self.assertIn("ELF header", str(ctx.exception))
 
+    def test_the_tables_extents_follow_the_declared_entry_sizes(self):
+        # validate_structure permits e_shentsize larger than the 64-byte ELF64
+        # minimum. Hardcoding 64 when describing how far the section header
+        # table reaches would understate it, so a section overlapping its tail
+        # would pass unnoticed.
+        #
+        # The stride has to move with the field: section headers are read at
+        # index * e_shentsize, so the table is rewritten at the wider stride
+        # rather than just relabelled.
+        data = bytearray(build_elf(total_size=32768))
+        e_shoff = struct.unpack_from("<Q", data, 40)[0]
+        e_shnum = struct.unpack_from("<H", data, 60)[0]
+        wide = 128
+
+        headers = [bytes(data[e_shoff + i * 64:e_shoff + i * 64 + 64])
+                   for i in range(e_shnum)]
+        table = bytearray(wide * e_shnum)
+        for i, h in enumerate(headers):
+            table[i * wide:i * wide + 64] = h
+        data[e_shoff:e_shoff + wide * e_shnum] = table
+        struct.pack_into("<H", data, 58, wide)
+
+        # A section that starts where a 64-byte-stride table would have ended,
+        # i.e. inside the real table.
+        base = e_shoff + wide
+        struct.pack_into("<I", data, base + 4, 1)      # SHT_PROGBITS
+        struct.pack_into("<Q", data, base + 24, e_shoff + e_shnum * 64)
+        struct.pack_into("<Q", data, base + 32, 32)
+
+        path = self.write(bytes(data))
+        with self.assertRaises(R.RelocationError) as ctx:
+            R.Elf64(path).validate_sections()
+        self.assertIn("section header table", str(ctx.exception))
+        self.assertIn("overlap", str(ctx.exception))
+
     def test_a_well_formed_file_is_still_accepted(self):
         # The overlap rule must not reject ordinary binaries.
         R.Elf64(self.write(build_elf())).validate_sections()

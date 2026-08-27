@@ -209,12 +209,20 @@ class Elf64:
         claims: list[tuple[int, int, str]] = [
             (0, 64, "the ELF header"),
         ]
+        # The entry sizes come from the header rather than the ELF64 minimums.
+        # validate_structure only requires e_phentsize >= 56 and e_shentsize >=
+        # 64, so a file may legally use larger entries -- and hardcoding the
+        # minimums would understate how far each table reaches, letting a
+        # section overlap its tail unnoticed. Everything else in this class
+        # (_ph_base, phdr_table_end, _sh_base) already uses these fields.
         if self.e_phnum:
-            claims.append((self.e_phoff, self.e_phoff + self.e_phnum * 56,
-                           "the program header table"))
+            claims.append(
+                (self.e_phoff, self.e_phoff + self.e_phnum * self.e_phentsize,
+                 "the program header table"))
         if self.e_shnum:
-            claims.append((self.e_shoff, self.e_shoff + self.e_shnum * 64,
-                           "the section header table"))
+            claims.append(
+                (self.e_shoff, self.e_shoff + self.e_shnum * self.e_shentsize,
+                 "the section header table"))
         for i in range(self.e_shnum):
             sh = self.section_header(i)
             if sh["sh_type"] == SHT_NOBITS or sh["sh_size"] == 0:

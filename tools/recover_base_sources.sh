@@ -50,12 +50,43 @@ fi
 # "the file is not there" would turn a network problem into a silently disabled
 # version policy, which is the exact outcome this script exists to prevent.
 # `git ls-tree` answers from the tree object, which is always local.
-if ! listing="$(git ls-tree --name-only "origin/$base_ref" -- sources.json)"; then
-    echo "could not list the tree of origin/$base_ref" >&2
+# Ask the tree what kind of entry a path is, if any.
+#
+# Prints the object type (blob, tree, commit) on stdout, or nothing when the
+# path is genuinely absent, and RETURNS NON-ZERO if git could not answer. "I
+# could not look" and "it is not there" lead to opposite decisions here, so
+# they must never share a representation.
+#
+# Note it returns rather than exits. Every caller invokes this inside a command
+# substitution, and `exit` there ends only the substitution's subshell: the
+# script would carry on with an empty string, which is exactly the "absent"
+# answer this function exists to distinguish. Callers check the status.
+tree_entry_type() {
+    local path="$1" line
+    if ! line="$(git ls-tree --full-tree "origin/$base_ref" -- "$path")"; then
+        echo "could not list origin/$base_ref for $path; refusing to draw" >&2
+        echo "any conclusion from a listing that failed." >&2
+        return 1
+    fi
+    [ -n "$line" ] || return 0
+    printf '%s' "$line" | awk 'NR==1 {print $2}'
+}
+
+if ! kind="$(tree_entry_type sources.json)"; then
     exit 1
 fi
 
-if [ -n "$listing" ]; then
+if [ -n "$kind" ] && [ "$kind" != "blob" ]; then
+    # A directory (or submodule) named sources.json is not the metadata file.
+    # `git show` on it prints a tree listing, and that listing would have been
+    # written out and compared as though it were the base metadata.
+    echo "origin/$base_ref:sources.json is a $kind, not a file." >&2
+    echo "The update policy compares against a JSON document; refusing to" >&2
+    echo "treat a $kind as one." >&2
+    exit 1
+fi
+
+if [ "$kind" = "blob" ]; then
     # The path is in the tree, so it must be readable. A failure here is a real
     # failure -- a missing blob, a broken object store -- and never a bootstrap.
     if ! git show "origin/$base_ref:sources.json" > "$out_path"; then
@@ -81,8 +112,17 @@ fi
 # or an attack rather than a bootstrap -- and treating it as a bootstrap would
 # turn "delete one file from the protected branch" into "switch the version
 # policy off". So require the base to carry no packaging at all.
+# Note these go through tree_entry_type too. Writing this as
+#   if [ -n "$(git ls-tree ... -- "$marker")" ]
+# reads a FAILED listing as an absent marker -- git's error goes to stderr, the
+# substitution is empty, and the loop concludes the base carries no packaging.
+# A broken object store would then have been reported as a bootstrap, which is
+# precisely the confusion this script exists to prevent.
 for marker in flake.nix nix/package.nix tools/verify_sources.py; do
-    if [ -n "$(git ls-tree --name-only "origin/$base_ref" -- "$marker")" ]; then
+    if ! marker_kind="$(tree_entry_type "$marker")"; then
+        exit 1
+    fi
+    if [ -n "$marker_kind" ]; then
         echo "origin/$base_ref has $marker but no sources.json." >&2
         echo "That is not a bootstrap: the branch is missing metadata the" >&2
         echo "update policy depends on. Refusing to verify without it." >&2
