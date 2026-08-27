@@ -116,5 +116,57 @@ else
 fi
 rm -rf "$root"
 
+echo "== an unobtainable blob is REFUSED, not read as an absent file =="
+# The dangerous shape, and the reason existence is decided with `git ls-tree`
+# rather than `git cat-file -e`.
+#
+# `cat-file -e <ref>:<path>` needs the blob object. In a partial (blobless)
+# clone that means fetching it from the promisor remote, which can fail for
+# reasons that have nothing to do with whether the file exists. Reading that
+# failure as "the file is not there" would report a bootstrap for a base branch
+# that plainly has sources.json -- silently switching off the downgrade and
+# drift rules.
+#
+# The state is built directly rather than by clone-and-filter, because a small
+# local clone keeps the blob anyway and the fixture would prove nothing: the
+# tree object stays, the blob goes.
+root="$(mktemp -d)"
+git init -q "$root/work"
+(
+    cd "$root/work"
+    git config user.email t@t; git config user.name t
+    git checkout -q -b main
+    printf '{"version":"9.9"}' > sources.json
+    printf 'x\n' > flake.nix
+    git add -A; git commit -q -m base
+    git update-ref refs/remotes/origin/main HEAD
+    sha="$(git ls-tree origin/main -- sources.json | awk '{print $3}')"
+    rm -f ".git/objects/${sha:0:2}/${sha:2}"
+)
+# Assert the fixture really is in the state being tested. Without this the
+# whole case can pass for the wrong reason.
+precondition_ok=1
+( cd "$root/work" && git cat-file -e origin/main:sources.json 2>/dev/null ) \
+    && precondition_ok=0
+[ -n "$( cd "$root/work" && git ls-tree --name-only origin/main -- sources.json )" ] \
+    || precondition_ok=0
+
+if [ "$precondition_ok" -ne 1 ]; then
+    bad "unobtainable blob" \
+        "fixture broken: the blob is still readable, or the tree lost the path"
+else
+    outp="$( cd "$root/work" && bash "$SCRIPT" main out.json 2>&1 )"
+    if printf '%s' "$outp" | grep -q 'bootstrap=true'; then
+        bad "unobtainable blob" \
+            "a base branch WITH sources.json was reported as a bootstrap, which
+     silently disables the downgrade and drift rules"
+    elif printf '%s' "$outp" | grep -q 'in the tree but could not be'; then
+        ok "unobtainable blob -> refused as damage, not read as absent"
+    else
+        bad "unobtainable blob" "unexpected output: $outp"
+    fi
+fi
+rm -rf "$root"
+
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

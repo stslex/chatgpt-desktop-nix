@@ -42,9 +42,26 @@ if ! git rev-parse --verify --quiet "origin/$base_ref^{commit}" >/dev/null; then
     exit 1
 fi
 
-if git cat-file -e "origin/$base_ref:sources.json" 2>/dev/null; then
+# Decide existence from the TREE, not from the blob.
+#
+# `git cat-file -e <ref>:<path>` needs the blob object itself, and in a partial
+# (blobless) clone that means a fetch from the promisor remote. If that remote
+# is momentarily unreachable the command fails -- and reading that failure as
+# "the file is not there" would turn a network problem into a silently disabled
+# version policy, which is the exact outcome this script exists to prevent.
+# `git ls-tree` answers from the tree object, which is always local.
+if ! listing="$(git ls-tree --name-only "origin/$base_ref" -- sources.json)"; then
+    echo "could not list the tree of origin/$base_ref" >&2
+    exit 1
+fi
+
+if [ -n "$listing" ]; then
+    # The path is in the tree, so it must be readable. A failure here is a real
+    # failure -- a missing blob, a broken object store -- and never a bootstrap.
     if ! git show "origin/$base_ref:sources.json" > "$out_path"; then
-        echo "origin/$base_ref:sources.json exists but could not be read" >&2
+        echo "origin/$base_ref:sources.json is in the tree but could not be" >&2
+        echo "read. This is a damaged or incomplete object store, not an" >&2
+        echo "absent file; refusing to treat it as one." >&2
         exit 1
     fi
     if [ ! -s "$out_path" ]; then
@@ -65,7 +82,7 @@ fi
 # turn "delete one file from the protected branch" into "switch the version
 # policy off". So require the base to carry no packaging at all.
 for marker in flake.nix nix/package.nix tools/verify_sources.py; do
-    if git cat-file -e "origin/$base_ref:$marker" 2>/dev/null; then
+    if [ -n "$(git ls-tree --name-only "origin/$base_ref" -- "$marker")" ]; then
         echo "origin/$base_ref has $marker but no sources.json." >&2
         echo "That is not a bootstrap: the branch is missing metadata the" >&2
         echo "update policy depends on. Refusing to verify without it." >&2
