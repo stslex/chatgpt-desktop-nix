@@ -212,5 +212,67 @@ class TestVerificationOrder(unittest.TestCase):
             "nothing about the artefacts",
         )
 
+
+class TestRefEncoding(unittest.TestCase):
+    """Branch and tag names must distinguish versions that differ.
+
+    Replacing unsafe characters with '-' is lossy, and Debian versions differ
+    in exactly those characters: `1.0~rc1`, `1.0-rc1`, `1.0+rc1` and `1.0:rc1`
+    all collapsed to one string. Two upstream versions would then share one
+    automation branch, and the second would be force-pushed over the first's
+    record.
+    """
+
+    COLLIDING = ["1.0~rc1", "1.0-rc1", "1.0+rc1", "1.0:rc1", "2:1.0", "2-1.0"]
+
+    def test_the_old_scheme_really_did_collide(self):
+        import re
+        lossy = {re.sub(r"[^A-Za-z0-9._-]", "-", v) for v in self.COLLIDING}
+        self.assertLess(len(lossy), len(self.COLLIDING),
+                        "fixture no longer demonstrates the collision")
+
+    def test_the_encoding_is_injective(self):
+        encoded = [T.encode_version_for_ref(v) for v in self.COLLIDING]
+        self.assertEqual(len(set(encoded)), len(self.COLLIDING))
+
+    def test_it_round_trips(self):
+        for version in self.COLLIDING + ["26.820.71523", "1.0+dfsg", "1.0-2"]:
+            with self.subTest(version=version):
+                self.assertEqual(
+                    T.decode_version_from_ref(T.encode_version_for_ref(version)),
+                    version)
+
+    def test_every_character_VERSION_RE_admits_round_trips(self):
+        import string
+        version = "0" + string.ascii_letters + string.digits + ".+~:-"
+        T.validate_version(version)
+        self.assertEqual(
+            T.decode_version_from_ref(T.encode_version_for_ref(version)),
+            version)
+
+    def test_the_result_is_a_valid_git_ref_component(self):
+        import shutil
+        import subprocess
+        if not shutil.which("git"):
+            self.skipTest("git is unavailable")
+        for version in self.COLLIDING + ["26.820.71523"]:
+            with self.subTest(version=version):
+                ref = "automation/chatgpt-" + T.encode_version_for_ref(version)
+                self.assertEqual(
+                    subprocess.run(
+                        ["git", "check-ref-format", "--allow-onelevel", ref],
+                        capture_output=True).returncode,
+                    0, f"{ref} is not a valid git ref")
+
+    def test_dot_sequences_and_lock_suffixes_are_handled(self):
+        # ".." is illegal in a ref component and ".lock" is reserved.
+        self.assertNotIn("..", T.encode_version_for_ref("1..0"))
+        self.assertFalse(T.encode_version_for_ref("1.lock").endswith(".lock"))
+
+    def test_an_implausible_version_is_refused_before_encoding(self):
+        for bad in ["", "../etc", "a1.0", "1.0 2"]:
+            with self.subTest(bad=bad), self.assertRaises(T.TrustError):
+                T.encode_version_for_ref(bad)
+
 if __name__ == "__main__":
     unittest.main()

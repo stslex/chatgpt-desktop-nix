@@ -146,6 +146,53 @@ def compare_debian_versions(a: str, b: str) -> int:
 VERSION_RE = re.compile(r"^[0-9][A-Za-z0-9.+~:-]*$")
 
 
+#: Characters that are safe in a Git ref component and need no encoding.
+#: Everything VERSION_RE admits but this does not is percent-encoded.
+_REF_SAFE = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._")
+
+
+def encode_version_for_ref(version: str) -> str:
+    """Encode a Debian version into a Git-ref-safe, *injective* component.
+
+    Replacing unsafe characters with '-' loses information, and Debian versions
+    differ in exactly those characters: `1.0~rc1`, `1.0-rc1`, `1.0+rc1` and
+    `1.0:rc1` all collapse to the same string. Two different upstream versions
+    would then share one automation branch, and the second would be compared
+    against -- and force-pushed over -- the first one's record.
+
+    Percent-encoding is reversible, so distinct versions always give distinct
+    refs. '%' itself is encoded first, so the mapping stays one-to-one.
+
+    Git also forbids a component that begins or ends with '.', contains '..',
+    or ends '.lock'; VERSION_RE already requires a leading digit, and '.' is
+    the only one of those characters left unencoded, so only the '..' and
+    '.lock' cases need handling.
+    """
+    validate_version(version)
+    out = []
+    for char in version:
+        if char in _REF_SAFE:
+            out.append(char)
+        else:
+            out.append(f"%{ord(char):02X}")
+    encoded = "".join(out)
+
+    # '..' is not a legal ref component. Encode the second dot so the result
+    # stays distinct from a single dot.
+    while ".." in encoded:
+        encoded = encoded.replace("..", ".%2E", 1)
+    if encoded.endswith(".lock"):
+        encoded = encoded[:-5] + "%2Elock"
+    return encoded
+
+
+def decode_version_from_ref(encoded: str) -> str:
+    """Inverse of :func:`encode_version_for_ref`."""
+    import urllib.parse
+    return urllib.parse.unquote(encoded)
+
+
 def validate_version(version: str) -> str:
     if not VERSION_RE.match(version) or len(version) > 128:
         raise TrustError(f"refusing implausible upstream version {version!r}")

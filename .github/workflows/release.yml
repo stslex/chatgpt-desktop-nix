@@ -90,12 +90,21 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "sha=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
 
-          # A Debian version may legitimately contain ':' (epoch) and '~'
-          # (pre-release), neither of which is valid in a git ref. Left as-is,
-          # `git rev-parse --verify` on such a ref returns 1 for "invalid
-          # refname" exactly as it does for "does not exist", so the loop below
-          # would wrongly conclude the tag is free and then fail to create it.
-          slug="$(printf '%s' "$version" | tr ':~+' '...')"
+          # A Debian version may legitimately contain ':' (epoch), '~'
+          # (pre-release) and '+', none of which is valid in a git ref. Mapping
+          # them all to '.' is lossy: 2:1.0, 2~1.0 and 2+1.0 would share one
+          # tag, so two different upstream versions could claim the same
+          # immutable release. Percent-encoding is reversible, so distinct
+          # versions always give distinct tags.
+          slug="$(python3 -c '
+          import sys
+          sys.path.insert(0, "tools")
+          import apt_trust as T
+          print(T.encode_version_for_ref(sys.argv[1]))' "$version")"
+          if ! git check-ref-format --allow-onelevel "chatgpt-$slug-nix1"; then
+            echo "encoded tag chatgpt-$slug-nix1 is not a valid git ref" >&2
+            exit 1
+          fi
           echo "slug=$slug" >> "$GITHUB_OUTPUT"
 
           # Immutable tag: chatgpt-<upstream-version>-nix<N>. N increments for
@@ -136,6 +145,26 @@ jobs:
           ref: ${{ needs.gate.outputs.sha }}
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Re-read protected main immediately before writing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED: ${{ needs.gate.outputs.sha }}
+        run: |
+          set -eu
+          # The gate job checked this too, but a full build ran in between and
+          # main may have moved. This job holds contents: write and is about to
+          # create an immutable tag, so the check has to be repeated here,
+          # immediately before the first write -- not inherited from a decision
+          # taken an hour ago.
+          tip="$(gh api "repos/${{ github.repository }}/commits/main" --jq .sha)"
+          if [ "$tip" != "$EXPECTED" ]; then
+            echo "main is now $tip, not the $EXPECTED this release is for." >&2
+            echo "Releasing a superseded commit would tag the wrong tree; the" >&2
+            echo "run for the newer commit will publish instead." >&2
+            exit 1
+          fi
+          echo "confirmed main is still $EXPECTED"
 
       - name: Refuse to move an existing tag
         env:

@@ -214,6 +214,21 @@ def guard_same_version_drift(previous: dict, candidate: dict) -> None:
                 )
 
 
+def _release_from_candidate(candidate: dict) -> T.VerifiedRelease:
+    """Rebuild the record set from metadata this run already verified."""
+    records = {}
+    for arch, entry in candidate["architectures"].items():
+        records[arch] = T.PackageRecord(
+            package=candidate["package"],
+            version=T.validate_version(candidate["version"]),
+            architecture=entry["debianArchitecture"],
+            filename=T.sanitize_filename(entry["filename"]),
+            size=int(entry["size"]),
+            sha256=entry["sha256"],
+        )
+    return T.VerifiedRelease(version=candidate["version"], records=records)
+
+
 def guard_observed_candidate(observed: dict, candidate: dict) -> None:
     """Refuse to overwrite a candidate we already recorded for this version.
 
@@ -307,6 +322,17 @@ def main() -> int:
         help="report whether an update exists without writing sources.json",
     )
     parser.add_argument(
+        "--resolve-only",
+        help="resolve and verify the signed release, write the candidate "
+             "metadata here, and stop. The caller reuses this exact result "
+             "rather than resolving a second time.",
+    )
+    parser.add_argument(
+        "--candidate",
+        help="a candidate produced by an earlier --resolve-only run; used "
+             "instead of resolving again",
+    )
+    parser.add_argument(
         "--observed",
         help="sources.json already recorded for this candidate (typically the "
              "existing automation branch's copy); compared before writing",
@@ -321,18 +347,46 @@ def main() -> int:
     resolved = ""
 
     try:
-        print(f"Verifying signed release metadata from {T.APT_ORIGIN}")
-        print(f"  pinned key {T.EXPECTED_KEY_FINGERPRINT}")
-        release = T.resolve_signed_release(
-            lambda url: fetch(url, max_bytes=T.MAX_INDEX_BYTES),
-            KEYRING_PATH,
-        )
-        print(f"  InRelease signature verified")
-        print(f"  upstream version {release.version} "
-              f"({', '.join(sorted(release.records))})")
+        release = None
+        if args.candidate:
+            # Reuse the result of this run's earlier --resolve-only pass.
+            # Resolving a second time opens a window in which the origin
+            # publishes a new version between the two calls, so the branch name
+            # would describe one candidate while the metadata written onto it
+            # described another.
+            with open(args.candidate, encoding="utf-8") as fh:
+                candidate = json.load(fh)
+            resolved = candidate.get("version", "")
+            if not resolved:
+                raise T.TrustError(
+                    f"{args.candidate} carries no version; it is not a "
+                    f"candidate this run produced")
+            print(f"Reusing the candidate resolved earlier in this run: "
+                  f"{resolved}")
+        else:
+            print(f"Verifying signed release metadata from {T.APT_ORIGIN}")
+            print(f"  pinned key {T.EXPECTED_KEY_FINGERPRINT}")
+            release = T.resolve_signed_release(
+                lambda url: fetch(url, max_bytes=T.MAX_INDEX_BYTES),
+                KEYRING_PATH,
+            )
+            print(f"  InRelease signature verified")
+            print(f"  upstream version {release.version} "
+                  f"({', '.join(sorted(release.records))})")
+            candidate = render_sources(release)
+            resolved = release.version
 
-        candidate = render_sources(release)
-        resolved = release.version
+            if args.resolve_only:
+                # Persist exactly what was verified so the caller can select a
+                # branch from it and hand it straight back.
+                with open(args.resolve_only, "w", encoding="utf-8") as fh:
+                    json.dump(candidate, fh, indent=2, ensure_ascii=False)
+                    fh.write("\n")
+                print(f"candidate written to {args.resolve_only}")
+                _emit_output(args, updated=False, version=resolved,
+                             previous=previous.get("version", ""))
+                return 0
+
         guard_downgrade(previous, candidate)
         guard_same_version_drift(previous, candidate)
 
@@ -342,9 +396,9 @@ def main() -> int:
             # package bodies.
             available = previous != candidate
             print(f"update available: {previous.get('version', '(none)')} -> "
-                  f"{release.version}" if available
-                  else f"sources.json is already current at {release.version}")
-            _emit_output(args, updated=available, version=release.version,
+                  f"{resolved}" if available
+                  else f"sources.json is already current at {resolved}")
+            _emit_output(args, updated=available, version=resolved,
                          previous=previous.get("version", ""))
             return 10 if available else 0
 
@@ -357,13 +411,17 @@ def main() -> int:
         # control fields. A daily run that verifies nothing is not a daily
         # verification.
         print("Verifying package bodies")
+        if release is None:
+            # A reused candidate still has its bodies verified; rebuild the
+            # records from metadata this run already signature-checked.
+            release = _release_from_candidate(candidate)
         with tempfile.TemporaryDirectory(prefix="chatgpt-deb-") as workdir:
             verify_debs(release, workdir)
 
         if previous == candidate:
-            print(f"sources.json is already current at {release.version}, and "
+            print(f"sources.json is already current at {resolved}, and "
                   f"both package bodies verified")
-            _emit_output(args, updated=False, version=release.version,
+            _emit_output(args, updated=False, version=resolved,
                          previous=previous.get("version", ""))
             return 0
 
@@ -374,8 +432,8 @@ def main() -> int:
             print("  candidate matches the one already recorded for this version")
 
         write_sources(candidate)
-        print(f"sources.json updated to {release.version}")
-        _emit_output(args, updated=True, version=release.version,
+        print(f"sources.json updated to {resolved}")
+        _emit_output(args, updated=True, version=resolved,
                      previous=previous.get("version", ""))
         return 0
 

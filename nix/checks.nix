@@ -84,6 +84,34 @@ in
     python3 -m unittest discover -s tests -v
   '';
 
+  # --- workflow shell behaviour -------------------------------------------
+
+  # These drive the real scripts against real git repositories. The defect they
+  # exist for could not be caught by reading: `if git ls-remote ...; then` with
+  # `rc=$?` afterwards reads the status of the *if statement*, which succeeds
+  # whenever neither branch runs, so a missing ref looked like exit 0.
+  observe-candidate = check "observe-candidate"
+    [ pkgs.git pkgs.python3 pkgs.bash ] ''
+    export HOME=$PWD/home; mkdir -p "$HOME"
+    git config --global user.email t@t
+    git config --global user.name t
+    git config --global init.defaultBranch main
+    cp -r ${../tools} tools
+    cp -r ${../tests} tests
+    chmod -R u+w .
+    bash tests/test_observe_candidate.sh
+  '';
+
+  push-lease = check "push-lease" [ pkgs.git pkgs.bash ] ''
+    export HOME=$PWD/home; mkdir -p "$HOME"
+    git config --global user.email t@t
+    git config --global user.name t
+    git config --global init.defaultBranch main
+    cp -r ${../tests} tests
+    chmod -R u+w .
+    bash tests/test_push_lease.sh
+  '';
+
   # --- the launcher's hard negatives -------------------------------------
 
   launcher-invariants = check "launcher-invariants" [ pkgs.bash ] ''

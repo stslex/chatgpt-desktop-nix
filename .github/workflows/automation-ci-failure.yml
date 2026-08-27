@@ -50,6 +50,13 @@ jobs:
       startsWith(github.event.workflow_run.head_branch, 'automation/chatgpt-')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # Shares its concurrency group with the updater's own reporter, so the two
+    # cannot race to create the same per-version issue.
+    concurrency:
+      # Same group the updater's own reporter uses, so the two cannot race to
+      # create one version's issue.
+      group: report-failure-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -64,14 +71,26 @@ jobs:
         run: |
           set -eu
 
-          # automation/chatgpt-<version>. The branch name reaches an issue
-          # title, so constrain it to the character set the updater's own
-          # sanitiser produces rather than trusting it.
-          version="${BRANCH#automation/chatgpt-}"
-          if ! printf '%s' "$version" | grep -qE '^[A-Za-z0-9._-]{1,64}$'; then
+          # automation/chatgpt-<encoded-version>. The encoding is reversible,
+          # so decode it back to the real Debian version the issue is about --
+          # reporting the percent-encoded form would key the issue on something
+          # no human recognises.
+          encoded="${BRANCH#automation/chatgpt-}"
+          if ! printf '%s' "$encoded" | grep -qE '^[A-Za-z0-9._%-]{1,160}$'; then
             echo "refusing to report on an unexpected branch name: $BRANCH" >&2
             exit 1
           fi
+          version="$(python3 -c '
+          import sys
+          sys.path.insert(0, "tools")
+          import apt_trust as T
+          decoded = T.decode_version_from_ref(sys.argv[1])
+          # Round-trip: the branch must be exactly what this version encodes to,
+          # so a hand-made branch cannot smuggle arbitrary text into a title.
+          if T.encode_version_for_ref(decoded) != sys.argv[1]:
+              raise SystemExit("branch is not a canonical encoding")
+          print(decoded)' "$encoded")"
+          echo "reporting on version $version (branch $BRANCH)"
 
           # Work out which gate failed, so the issue says whether this is
           # packaging drift or a runtime regression rather than just "CI red".

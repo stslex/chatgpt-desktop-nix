@@ -54,17 +54,35 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           set -eu
-          if git show "origin/$BASE_REF:sources.json" > base-sources.json 2>/dev/null; then
-            echo "path=base-sources.json" >> "$GITHUB_OUTPUT"
-          else
-            echo "path=" >> "$GITHUB_OUTPUT"
+          # The base metadata is what the no-downgrade and no-drift rules are
+          # applied against. If it cannot be obtained the policy cannot be
+          # enforced, and silently omitting --base-sources would let the run go
+          # green having checked less than it claims. Fail instead.
+          if ! git show "origin/$BASE_REF:sources.json" > base-sources.json; then
+            echo "could not read sources.json from origin/$BASE_REF." >&2
+            echo "The update policy is applied against it, so this run cannot" >&2
+            echo "verify what it is supposed to verify." >&2
+            exit 1
           fi
+          if [ ! -s base-sources.json ]; then
+            echo "origin/$BASE_REF:sources.json is empty" >&2
+            exit 1
+          fi
+          echo "path=base-sources.json" >> "$GITHUB_OUTPUT"
 
       - name: Re-run the trust chain against the live origin
         run: |
           set -eu
           base=""
-          if [ -n "${{ steps.base.outputs.path }}" ]; then
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # The recovery step above is required for pull requests and fails
+            # the job if it cannot produce this, so an empty value here would
+            # mean the step did not run at all.
+            if [ -z "${{ steps.base.outputs.path }}" ]; then
+              echo "base metadata was not recovered; refusing to verify" \
+                   "without the policy comparison" >&2
+              exit 1
+            fi
             base="--base-sources ${{ steps.base.outputs.path }}"
           fi
           # shellcheck disable=SC2086

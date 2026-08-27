@@ -30,6 +30,24 @@ import apt_trust as T  # noqa: E402
 ALLOWED_FILES = {"sources.json"}
 
 
+def _consistent_snapshot(repo: str, pr_number: str, attempts: int = 3):
+    """Read the mutable PR state, and prove it did not move while reading.
+
+    Returns ``(pr, files, head_sha)`` or ``(None, None, None)`` if the head
+    moved on every attempt.
+    """
+    for _ in range(attempts):
+        before = gh_api(f"repos/{repo}/pulls/{pr_number}")
+        head = before.get("head", {}).get("sha")
+        files = gh_api(f"repos/{repo}/pulls/{pr_number}/files")
+        after = gh_api(f"repos/{repo}/pulls/{pr_number}")
+        if head and after.get("head", {}).get("sha") == head:
+            # Labels and base come from the same object, so they are part of
+            # this snapshot too.
+            return after, files, head
+    return None, None, None
+
+
 def gh_api(path: str) -> dict:
     proc = subprocess.run(
         ["gh", "api", path], capture_output=True, text=True, check=False
@@ -48,24 +66,27 @@ def main() -> int:
     parser.add_argument("--expected-version", required=True)
     parser.add_argument("--expected-label", required=True)
     parser.add_argument("--expected-author", required=True)
+    parser.add_argument(
+        "--emit-head",
+        help="write the exact head SHA every check was made against here, so "
+             "the caller can bind the merge to it",
+    )
     args = parser.parse_args()
 
-    pr = gh_api(f"repos/{args.repo}/pulls/{args.pr}")
-    files = gh_api(f"repos/{args.repo}/pulls/{args.pr}/files")
-
-    # The PR object and its file list are two separate reads. A push landing
-    # between them would leave us checking an old head against a new diff, so
-    # read the PR again afterwards and require the head to be unmoved. Any
-    # movement means we cannot describe a single consistent state, and the
-    # honest response is to decline rather than reason about which half is
-    # current.
-    pr_after = gh_api(f"repos/{args.repo}/pulls/{args.pr}")
-    if pr_after.get("head", {}).get("sha") != pr.get("head", {}).get("sha"):
+    # Take one internally consistent snapshot of everything mutable.
+    #
+    # The pull request object, its file list, its labels and the base branch's
+    # own contents are separate reads. Checking them independently means a push
+    # landing between two of them leaves an old head validated against a new
+    # diff. So: read, re-read the head, and require it unmoved across the whole
+    # inspection. Any movement means no single state was ever observed whole,
+    # and the honest response is to decline rather than pick a half.
+    pr, files, head_sha = _consistent_snapshot(args.repo, args.pr)
+    if pr is None:
         print(
-            f"{args.repo}#{args.pr}: the head moved while it was being "
-            f"inspected ({pr.get('head', {}).get('sha')} -> "
-            f"{pr_after.get('head', {}).get('sha')}); refusing to enable "
-            f"auto-merge on a state that was never observed whole.",
+            f"{args.repo}#{args.pr}: the pull request kept changing while it "
+            f"was being inspected; refusing to enable auto-merge on a state "
+            f"that was never observed whole.",
             file=sys.stderr,
         )
         return 1
@@ -170,7 +191,7 @@ def main() -> int:
 
     # 10. The head SHA must still be the one we just pushed, so nothing was
     #     appended between opening the pull request and enabling auto-merge.
-    head_sha = pr.get("head", {}).get("sha", "")
+    #     head_sha comes from the consistent snapshot above.
     local = subprocess.run(
         ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=False
     ).stdout.strip()
@@ -207,6 +228,15 @@ def main() -> int:
         return 1
 
     print("\nevery eligibility check passed; auto-merge may be enabled")
+
+    # Hand the caller the exact SHA every check above was made against, so the
+    # merge can be bound to it. Enabling auto-merge without that binding would
+    # let a push between this check and the merge carry different content in
+    # under a decision made about the old one.
+    if args.emit_head:
+        with open(args.emit_head, "w", encoding="utf-8") as fh:
+            fh.write(head_sha)
+    print(f"verified head: {head_sha}")
     return 0
 
 

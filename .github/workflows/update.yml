@@ -41,9 +41,12 @@ jobs:
     timeout-minutes: 60
     outputs:
       updated: ${{ steps.run.outputs.updated }}
-      version: ${{ steps.run.outputs.version }}
+      # The candidate step resolves first, so its version survives a failure in
+      # any later step. Falling back to the run step alone would report
+      # "unknown" for every failure that happens before it.
+      version: ${{ steps.run.outputs.version || steps.candidate.outputs.version }}
       previous: ${{ steps.run.outputs.previous_version }}
-      branch: ${{ steps.run.outputs.branch }}
+      branch: ${{ steps.run.outputs.branch || steps.candidate.outputs.branch }}
       failure: ${{ steps.run.outputs.failure }}
     steps:
       - name: Mint an installation token for the updater App
@@ -62,80 +65,60 @@ jobs:
       - name: Install gnupg
         run: sudo apt-get update && sudo apt-get install -y gnupg
 
-      - name: Recover any candidate already recorded for this version
-        id: observed
+      - name: Resolve the signed candidate once
+        id: candidate
         run: |
           set -eu
-          # If an automation branch already exists for the version upstream is
-          # currently publishing, its sources.json is the record of what we saw
-          # first. It is fetched BEFORE anything is written, so a same-version
-          # republish is compared against it rather than silently replacing it.
-          version="$(python3 - <<'PY'
-          import json, sys, os
-          sys.path.insert(0, "tools")
-          import apt_trust as T, update as U
-          try:
-              r = T.resolve_signed_release(
-                  lambda u: U.fetch(u, max_bytes=T.MAX_INDEX_BYTES),
-                  U.KEYRING_PATH)
-              print(r.version)
-          except Exception:
-              print("")
-          PY
-          )"
-          echo "upstream currently publishes: ${version:-<unresolved>}"
-          if [ -z "$version" ]; then
-            echo "path=" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          sanitized="$(printf '%s' "$version" | tr -c 'A-Za-z0-9._-' '-')"
-          branch="automation/chatgpt-$sanitized"
-
-          # "The branch does not exist" and "I could not find out" must not be
-          # the same answer. Treating a failed fetch as absence skips
-          # --observed, which skips guard_observed_candidate entirely -- the
-          # only check standing between a same-version republish and a
-          # force-push over the candidate already recorded for it. A DNS blip
-          # would silently reopen exactly the gap that guard exists to close.
+          # Resolve and verify exactly once. Everything downstream -- the
+          # branch name, the observation, the metadata written to the branch --
+          # is derived from this one result. Resolving again later would open a
+          # window in which the origin publishes a new version between the two
+          # calls, so the branch name would describe one candidate while its
+          # contents described another.
           #
-          # git ls-remote --exit-code distinguishes them: 2 means "no such
-          # ref", anything else non-zero means the question was not answered.
-          state=""
-          for attempt in 1 2 3 4 5; do
-            if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
-              state=exists; break
-            fi
-            rc=$?
-            if [ "$rc" -eq 2 ]; then state=absent; break; fi
-            echo "  ls-remote failed (exit $rc); retry $attempt/5" >&2
-            sleep $(( attempt * 5 ))
-          done
-
-          if [ -z "$state" ]; then
-            echo "could not determine whether $branch exists." >&2
-            echo "Proceeding would skip the same-version drift guard, so this" >&2
-            echo "run stops here instead. The next scheduled run will retry." >&2
+          # A discovery failure aborts. It must never be read as "no candidate".
+          if ! python3 tools/update.py --resolve-only candidate.json; then
+            echo "could not resolve a signed candidate; stopping" >&2
             exit 30
           fi
+          version="$(python3 -c 'import json;print(json.load(open("candidate.json"))["version"])')"
+          ref="$(python3 -c '
+          import json, sys
+          sys.path.insert(0, "tools")
+          import apt_trust as T
+          print(T.encode_version_for_ref(
+              json.load(open("candidate.json"))["version"]))')"
+          echo "resolved $version -> automation/chatgpt-$ref"
+          {
+            echo "version=$version"
+            echo "branch=automation/chatgpt-$ref"
+          } >> "$GITHUB_OUTPUT"
 
-          if [ "$state" = "absent" ]; then
-            echo "no automation branch exists for $version"
+      - name: Recover any candidate already recorded for this version
+        id: observed
+        env:
+          BRANCH: ${{ steps.candidate.outputs.branch }}
+          VERSION: ${{ steps.candidate.outputs.version }}
+        run: |
+          set -eu
+          # tools/observe_candidate.sh distinguishes "absent" from "could not
+          # tell", which inline shell got wrong: `if git ls-remote ...; then`
+          # followed by `rc=$?` reads the status of the *if statement*, which
+          # succeeds whenever no branch runs -- so a missing ref looked like
+          # exit 0 and the exit-2 case was never reached. It is covered by
+          # tests/test_observe_candidate.sh against real repositories.
+          result="$(bash tools/observe_candidate.sh origin "$BRANCH" "$VERSION" \
+                      observed-sources.json)"
+          echo "$result"
+          state="$(printf '%s\n' "$result" | sed -n 's/^state=//p')"
+          oid="$(printf '%s\n' "$result" | sed -n 's/^oid=//p')"
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+          echo "oid=$oid" >> "$GITHUB_OUTPUT"
+          if [ "$state" = "exists" ]; then
+            echo "path=observed-sources.json" >> "$GITHUB_OUTPUT"
+          else
             echo "path=" >> "$GITHUB_OUTPUT"
-            exit 0
           fi
-
-          # The branch exists, so its sources.json must be readable. A failure
-          # here is a failure, not an absence.
-          if ! git fetch --depth=1 origin "$branch"; then
-            echo "could not fetch $branch, which ls-remote says exists" >&2
-            exit 30
-          fi
-          if ! git show "FETCH_HEAD:sources.json" > observed-sources.json; then
-            echo "$branch exists but carries no readable sources.json." >&2
-            echo "That is not a shape this automation creates; review it." >&2
-            exit 1
-          fi
-          echo "recovered the candidate already recorded on $branch"
-          echo "path=observed-sources.json" >> "$GITHUB_OUTPUT"
 
       - name: Resolve and verify the current upstream release
         id: run
@@ -149,7 +132,7 @@ jobs:
             observed="--observed ${{ steps.observed.outputs.path }}"
           fi
           # shellcheck disable=SC2086
-          python3 tools/update.py --github-output $observed
+          python3 tools/update.py --github-output --candidate candidate.json $observed
           status=$?
           set -e
           echo "status=$status" >> "$GITHUB_OUTPUT"
@@ -161,9 +144,9 @@ jobs:
             *) echo "updater failed with status $status" >&2 ;;
           esac
 
-          version="$(python3 -c 'import json;print(json.load(open("sources.json"))["version"])' 2>/dev/null || echo)"
-          sanitized="$(printf '%s' "$version" | tr -c 'A-Za-z0-9._-' '-')"
-          echo "branch=automation/chatgpt-$sanitized" >> "$GITHUB_OUTPUT"
+          # The branch was decided from the single resolved candidate, not
+          # re-derived here, so it always describes the metadata being written.
+          echo "branch=${{ steps.candidate.outputs.branch }}" >> "$GITHUB_OUTPUT"
 
           if [ "$status" -ne 0 ]; then
             exit "$status"
@@ -196,19 +179,14 @@ jobs:
           BRANCH: ${{ steps.run.outputs.branch }}
           VERSION: ${{ steps.run.outputs.version }}
           PREVIOUS: ${{ steps.run.outputs.previous_version }}
+          OBSERVED_STATE: ${{ steps.observed.outputs.state }}
+          OBSERVED_OID: ${{ steps.observed.outputs.oid }}
         run: |
           set -eu
           slug="${{ vars.UPDATER_APP_SLUG }}"
           slug="${slug:-chatgpt-desktop-nix-updater}"
           git config user.name "$slug[bot]"
           git config user.email "${{ vars.UPDATER_APP_ID }}+$slug[bot]@users.noreply.github.com"
-
-          # Make sure we hold a remote-tracking ref for this branch before
-          # using --force-with-lease. Without one the lease has nothing to
-          # compare against; with one, refreshing a branch left over from an
-          # earlier failed run is safe and clobbering someone else's work is
-          # not possible.
-          git fetch origin "$BRANCH" || true
 
           git checkout -B "$BRANCH"
           git add sources.json
@@ -227,7 +205,24 @@ jobs:
           Only sources.json is changed. Packaging code, workflows, ELF
           baselines and flake.lock are untouched."
 
-          git push --force-with-lease origin "$BRANCH"
+          # Bind the push to exactly what was observed earlier in this run.
+          #
+          # A bare --force-with-lease compares against the remote-tracking ref,
+          # which a fetch immediately beforehand would have refreshed to
+          # whatever is there *now* -- so the lease would be against a state
+          # nothing verified, and a concurrent update would be silently
+          # clobbered. Naming the expected object id makes the lease mean what
+          # it says: "only if the branch is still what I compared against".
+          if [ "$OBSERVED_STATE" = "exists" ]; then
+            git push --force-with-lease="refs/heads/$BRANCH:$OBSERVED_OID" \
+              origin "HEAD:refs/heads/$BRANCH"
+          else
+            # The branch was proven absent. Refuse to create it if that is no
+            # longer true: another run got there first, and its candidate has
+            # not been compared against ours.
+            git push --force-with-lease="refs/heads/$BRANCH:" \
+              origin "HEAD:refs/heads/$BRANCH"
+          fi
 
           # One pull request per exact version. If a previous run already made
           # one, reuse it instead of opening a duplicate.
@@ -298,10 +293,23 @@ jobs:
             --expected-base main \
             --expected-version "$VERSION" \
             --expected-label automated-upstream-update \
-            --expected-author "${EXPECTED_APP_SLUG:-chatgpt-desktop-nix-updater}[bot]"
+            --expected-author "${EXPECTED_APP_SLUG:-chatgpt-desktop-nix-updater}[bot]" \
+            --emit-head verified-head.txt
 
-          gh pr merge "$PR_NUMBER" --squash --auto
-          echo "auto-merge enabled; the required ci-ok check decides from here"
+          ELIGIBLE_HEAD_SHA="$(cat verified-head.txt)"
+          if ! printf '%s' "$ELIGIBLE_HEAD_SHA" | grep -qE '^[0-9a-f]{40}$'; then
+            echo "eligibility did not report the head it verified" >&2
+            exit 1
+          fi
+
+          # Bind the merge to the exact commit every eligibility check was made
+          # against. Without --match-head-commit, a push landing between the
+          # check and the merge would carry different content in under a
+          # decision made about the old head.
+          gh pr merge "$PR_NUMBER" --squash --auto \
+            --match-head-commit "$ELIGIBLE_HEAD_SHA"
+          echo "auto-merge enabled for $ELIGIBLE_HEAD_SHA;" \
+               "the required ci-ok check decides from here"
 
   # -------------------------------------------------------------------
   # One deduplicated issue per upstream version that fails, so a daily
@@ -313,6 +321,15 @@ jobs:
     if: failure()
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # One reporter per version at a time. The reporter lists open issues and
+    # then creates one if none matches; two concurrent runs would both see none
+    # and both create. Serialising on the version closes that without needing
+    # the API to offer an atomic create-if-absent.
+    concurrency:
+      # Keyed on the branch, which the CI-failure reporter also has, so the
+      # two share one group and cannot both create the same issue.
+      group: report-failure-${{ needs.update.outputs.branch || 'unknown' }}
+      cancel-in-progress: false
     # Filing an issue needs `issues: write`, which the updater App deliberately
     # does not have -- it holds only Metadata, Contents and Pull requests. Use
     # a job-scoped GITHUB_TOKEN with exactly the one extra permission instead
