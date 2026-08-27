@@ -102,6 +102,18 @@ in
     bash tests/test_observe_candidate.sh
   '';
 
+  recover-base-sources = check "recover-base-sources"
+    [ pkgs.git pkgs.bash ] ''
+    export HOME=$PWD/home; mkdir -p "$HOME"
+    git config --global user.email t@t
+    git config --global user.name t
+    git config --global init.defaultBranch main
+    cp -r ${../tools} tools
+    cp -r ${../tests} tests
+    chmod -R u+w .
+    bash tests/test_recover_base_sources.sh
+  '';
+
   push-lease = check "push-lease" [ pkgs.git pkgs.bash ] ''
     export HOME=$PWD/home; mkdir -p "$HOME"
     git config --global user.email t@t
@@ -164,6 +176,22 @@ in
       grep -qE "^export PATH=\"[^\"]*$tool" ${launcher} \
         || { echo "$tool is not on the launcher's own PATH" >&2; exit 1; }
     done
+
+    echo "the namespace gate must still exist and still be called"
+    grep -q 'check_user_namespaces()' ${launcher}
+    grep -qE '^ *check_user_namespaces$' ${launcher}
+
+    echo "the --version/--help exemption must require a lone argument"
+    # Electron answers these before any renderer exists, so they do not need
+    # the sandbox. That exemption must not become a way to start the app: the
+    # whole argument list has to be exactly one of those flags.
+    grep -qE '^if \(\( \$# == 1 \)\); then$' ${launcher} \
+      || { echo "the exemption is not bounded to a single argument" >&2; exit 1; }
+    if grep -qE 'needs_sandbox=0' ${launcher}; then
+      # and only for those flags
+      grep -qE '^ *--version\|-v\|--help\|-h\) needs_sandbox=0 ;;$' ${launcher} \
+        || { echo "the exemption covers unexpected arguments" >&2; exit 1; }
+    fi
   '';
 
   launcher-runs-with-no-environment =

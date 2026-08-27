@@ -3,7 +3,8 @@
 #
 # Responsibilities, in order:
 #   1. verify the kernel gives us unprivileged user namespaces, because that is
-#      what Chromium's sandbox relies on here;
+#      what Chromium's sandbox relies on here (skipped for `--version` and
+#      `--help`, which never start a renderer);
 #   2. publish a writable copy of the bundled-plugin resources, since Electron
 #      rewrites metadata under a path that is read-only in the Nix store;
 #   3. put the package's own tools on PATH without displacing the user's;
@@ -294,7 +295,29 @@ inuse_lock() {
 # Main
 # ---------------------------------------------------------------------------
 
-check_user_namespaces
+# `--version` and `--help` are answered by Electron in the browser process,
+# before any renderer or zygote exists, so they do not depend on the sandbox
+# that the check below is about. Refusing them on a host without user
+# namespaces protects nothing and makes the package unusable for the things
+# that legitimately ask a binary what it is: a packaging check, `nix run . --
+# --version`, a container build, a CI job on a runner where AppArmor restricts
+# unprivileged namespaces.
+#
+# This is not an escape hatch for starting the application. The whole argument
+# list has to be exactly one of these flags; any other argument, and any
+# combination with other arguments, goes through the check. And if Electron
+# ever did need the sandbox to answer these, it would fail on its own rather
+# than start unsandboxed.
+needs_sandbox=1
+if (( $# == 1 )); then
+    case "$1" in
+        --version|-v|--help|-h) needs_sandbox=0 ;;
+    esac
+fi
+
+if (( needs_sandbox )); then
+    check_user_namespaces
+fi
 
 # Under `set -u` a bare $HOME would abort the launcher outright when HOME is
 # unset — which happens in systemd units, some containers and `env -i`. Fall

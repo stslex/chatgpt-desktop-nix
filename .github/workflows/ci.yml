@@ -53,37 +53,38 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
-          set -eu
-          # The base metadata is what the no-downgrade and no-drift rules are
-          # applied against. If it cannot be obtained the policy cannot be
-          # enforced, and silently omitting --base-sources would let the run go
-          # green having checked less than it claims. Fail instead.
-          if ! git show "origin/$BASE_REF:sources.json" > base-sources.json; then
-            echo "could not read sources.json from origin/$BASE_REF." >&2
-            echo "The update policy is applied against it, so this run cannot" >&2
-            echo "verify what it is supposed to verify." >&2
-            exit 1
-          fi
-          if [ ! -s base-sources.json ]; then
-            echo "origin/$BASE_REF:sources.json is empty" >&2
-            exit 1
-          fi
-          echo "path=base-sources.json" >> "$GITHUB_OUTPUT"
+          # The logic lives in a script so it can be driven against real
+          # repositories by tests/test_recover_base_sources.sh, which inline
+          # YAML cannot be.
+          bash tools/recover_base_sources.sh "$BASE_REF" base-sources.json \
+            >> "$GITHUB_OUTPUT"
 
       - name: Re-run the trust chain against the live origin
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_PATH: ${{ steps.base.outputs.path }}
+          BASE_BOOTSTRAP: ${{ steps.base.outputs.bootstrap }}
         run: |
           set -eu
           base=""
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            # The recovery step above is required for pull requests and fails
-            # the job if it cannot produce this, so an empty value here would
-            # mean the step did not run at all.
-            if [ -z "${{ steps.base.outputs.path }}" ]; then
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            if [ "$BASE_BOOTSTRAP" = "true" ]; then
+              echo "NOTE: the base branch carries no packaging yet, so there"
+              echo "is no previous version for the no-downgrade and no-drift"
+              echo "rules to compare against. This is the pull request that"
+              echo "introduces sources.json. Every other check below still"
+              echo "applies in full, and once this merges the comparison"
+              echo "becomes mandatory for every later run."
+            elif [ -n "$BASE_PATH" ]; then
+              base="--base-sources $BASE_PATH"
+            else
+              # The recovery step is required for pull requests and fails the
+              # job if it cannot produce one of these, so reaching here means
+              # it did not run at all.
               echo "base metadata was not recovered; refusing to verify" \
                    "without the policy comparison" >&2
               exit 1
             fi
-            base="--base-sources ${{ steps.base.outputs.path }}"
           fi
           # shellcheck disable=SC2086
           python3 tools/verify_sources.py --strict $base
@@ -209,16 +210,48 @@ jobs:
           set -eu
           # A build that produces an unrunnable binary is not support. This
           # executes the real launcher on real hardware for this architecture,
-          # including its namespace precheck and plugin-cache publish.
+          # including its plugin-cache publish.
           out=$(nix build .#chatgpt --no-link --print-out-paths)
+          expected=$(python3 -c 'import json;print(json.load(open("sources.json"))["version"])')
+
+          # `--version` must work whatever the sandbox situation is: Electron
+          # answers it before any renderer exists. GitHub's runners restrict
+          # unprivileged user namespaces through AppArmor, so this is a real
+          # test of that claim rather than an assumption about it.
           version="$("$out/bin/chatgpt" --version)"
           echo "launcher reports: $version"
           case "$version" in
-            *"$(python3 -c 'import json;print(json.load(open("sources.json"))["version"])')"*) ;;
+            *"$expected"*) ;;
             *) echo "unexpected --version output" >&2; exit 1 ;;
           esac
           test -e "$HOME/.cache/chatgpt-desktop-nix/resources"
           echo "writable plugin cache published"
+
+          # Starting the application is a different matter, and what the
+          # launcher should do depends on this host. Ask the kernel, then
+          # require the launcher to agree with the answer.
+          if unshare --user --map-root-user true 2>/dev/null; then
+            echo "this runner has unprivileged user namespaces;"
+            echo "the graphical smoke job covers actually starting the app"
+          else
+            echo "this runner restricts unprivileged user namespaces;"
+            echo "the launcher must refuse to start the app, and say why"
+            # No display here either, but the namespace check runs first and
+            # exits before Electron is ever executed, so this cannot hang.
+            if err="$("$out/bin/chatgpt" 2>&1)"; then
+              echo "the launcher started the application on a host with no" >&2
+              echo "user namespaces, which is exactly what it must never do" >&2
+              exit 1
+            fi
+            case "$err" in
+              *"unprivileged user namespaces are not available"*)
+                echo "refused, with the expected diagnostic" ;;
+              *)
+                echo "refused, but not for the expected reason:" >&2
+                echo "$err" >&2
+                exit 1 ;;
+            esac
+          fi
 
       - name: Bounded graphical startup under Xvfb
         run: |
