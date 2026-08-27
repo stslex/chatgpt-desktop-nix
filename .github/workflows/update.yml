@@ -17,11 +17,6 @@ on:
     # makes scheduled runs queue for a long time.
     - cron: "17 4 * * *"
   workflow_dispatch:
-    inputs:
-      force_pr:
-        description: "Open a PR even if sources.json is already current"
-        type: boolean
-        default: false
 
 # Never run two updater passes at once, and never cancel one midway: a
 # cancelled run could leave a branch pushed with no pull request attached.
@@ -35,6 +30,13 @@ permissions:
 jobs:
   update:
     name: Check for a new upstream release
+    # The App private key is only available to jobs in this environment, whose
+    # deployment branch policy admits `main` alone. workflow_dispatch lets a
+    # caller choose any ref; without this, a feature-branch dispatch would run
+    # that branch's code with the key in scope. GitHub refuses to start an
+    # environment job whose ref the policy does not allow, so the restriction
+    # is enforced before any of this workflow's steps execute.
+    environment: updater
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     outputs:
@@ -60,6 +62,42 @@ jobs:
       - name: Install gnupg
         run: sudo apt-get update && sudo apt-get install -y gnupg
 
+      - name: Recover any candidate already recorded for this version
+        id: observed
+        run: |
+          set -eu
+          # If an automation branch already exists for the version upstream is
+          # currently publishing, its sources.json is the record of what we saw
+          # first. It is fetched BEFORE anything is written, so a same-version
+          # republish is compared against it rather than silently replacing it.
+          version="$(python3 - <<'PY'
+          import json, sys, os
+          sys.path.insert(0, "tools")
+          import apt_trust as T, update as U
+          try:
+              r = T.resolve_signed_release(
+                  lambda u: U.fetch(u, max_bytes=T.MAX_INDEX_BYTES),
+                  U.KEYRING_PATH)
+              print(r.version)
+          except Exception:
+              print("")
+          PY
+          )"
+          echo "upstream currently publishes: ${version:-<unresolved>}"
+          if [ -z "$version" ]; then
+            echo "path=" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          sanitized="$(printf '%s' "$version" | tr -c 'A-Za-z0-9._-' '-')"
+          branch="automation/chatgpt-$sanitized"
+          if git fetch origin "$branch" 2>/dev/null \
+             && git show "FETCH_HEAD:sources.json" > observed-sources.json 2>/dev/null; then
+            echo "recovered the candidate already recorded on $branch"
+            echo "path=observed-sources.json" >> "$GITHUB_OUTPUT"
+          else
+            echo "no existing automation branch for $version"
+            echo "path=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Resolve and verify the current upstream release
         id: run
         run: |
@@ -67,7 +105,12 @@ jobs:
           # The updater writes sources.json only after the whole signed chain,
           # including both .deb bodies, has verified.
           set +e
-          python3 tools/update.py --github-output
+          observed=""
+          if [ -n "${{ steps.observed.outputs.path }}" ]; then
+            observed="--observed ${{ steps.observed.outputs.path }}"
+          fi
+          # shellcheck disable=SC2086
+          python3 tools/update.py --github-output $observed
           status=$?
           set -e
           echo "status=$status" >> "$GITHUB_OUTPUT"
@@ -231,27 +274,31 @@ jobs:
     if: failure()
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # Filing an issue needs `issues: write`, which the updater App deliberately
+    # does not have -- it holds only Metadata, Contents and Pull requests. Use
+    # a job-scoped GITHUB_TOKEN with exactly the one extra permission instead
+    # of widening the App.
+    permissions:
+      contents: read
+      issues: write
     steps:
-      - name: Mint an installation token
-        id: app
-        uses: actions/create-github-app-token@67e27a7eb7db372a1c61a7f9bdab8699e9ee57f7 # v1.11.0
-        with:
-          app-id: ${{ vars.UPDATER_APP_ID }}
-          private-key: ${{ secrets.UPDATER_APP_PRIVATE_KEY }}
-
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: main
 
       - name: Open or update the issue for this version
         env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
-          VERSION: ${{ needs.update.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+          # update.py emits the resolved candidate when it got that far, and
+          # the committed version otherwise. Falling back to the committed
+          # version keeps the issue keyed to something real instead of
+          # collapsing it to "unknown" the moment verification fails.
+          VERSION: ${{ needs.update.outputs.version || needs.update.outputs.previous }}
           KIND: ${{ needs.update.outputs.failure }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python3 tools/report_failure.py \
             --repo "${{ github.repository }}" \
-            --version "${VERSION:-unknown}" \
+            --version "${VERSION:?no candidate version to report}" \
             --kind "${KIND:-unknown}" \
             --run-url "$RUN_URL"

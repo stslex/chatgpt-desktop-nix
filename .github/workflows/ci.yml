@@ -6,12 +6,20 @@ name: CI
 # This workflow handles untrusted code from pull requests, so it takes no
 # secrets and holds only a read token. Nothing here can write to the
 # repository. `pull_request_target` is deliberately not used.
+# There is deliberately no workflow_dispatch trigger.
+#
+# Required status checks are matched by SHA and context name. A manual run of
+# this workflow against an automation pull request's head SHA would publish a
+# green `ci-ok` for that SHA -- and because `changed-files-policy` only runs for
+# `pull_request`, that green would have been produced without the file-scope
+# gate that is the only thing constraining what an automated update may change.
+# GitHub's "Re-run jobs" button still works and preserves the original event,
+# so nothing operational is lost.
 on:
   pull_request:
   push:
     branches: [main]
   merge_group:
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -33,13 +41,34 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
 
       - name: Install gnupg
         run: sudo apt-get update && sudo apt-get install -y gnupg
 
+      - name: Recover the protected branch's metadata
+        id: base
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -eu
+          if git show "origin/$BASE_REF:sources.json" > base-sources.json 2>/dev/null; then
+            echo "path=base-sources.json" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Re-run the trust chain against the live origin
         run: |
-          python3 tools/verify_sources.py --strict
+          set -eu
+          base=""
+          if [ -n "${{ steps.base.outputs.path }}" ]; then
+            base="--base-sources ${{ steps.base.outputs.path }}"
+          fi
+          # shellcheck disable=SC2086
+          python3 tools/verify_sources.py --strict $base
 
   # ---------------------------------------------------------------------
   # The automated updater is only allowed to touch sources.json. This job
@@ -152,6 +181,55 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: Run the packaged launcher natively
+        run: |
+          set -eu
+          # A build that produces an unrunnable binary is not support. This
+          # executes the real launcher on real hardware for this architecture,
+          # including its namespace precheck and plugin-cache publish.
+          out=$(nix build .#chatgpt --no-link --print-out-paths)
+          version="$("$out/bin/chatgpt" --version)"
+          echo "launcher reports: $version"
+          case "$version" in
+            *"$(python3 -c 'import json;print(json.load(open("sources.json"))["version"])')"*) ;;
+            *) echo "unexpected --version output" >&2; exit 1 ;;
+          esac
+          test -e "$HOME/.cache/chatgpt-desktop-nix/resources"
+          echo "writable plugin cache published"
+
+      - name: Bounded graphical startup under Xvfb
+        run: |
+          set -eu
+          out=$(nix build .#chatgpt --no-link --print-out-paths)
+          nix shell nixpkgs#xvfb-run nixpkgs#xdotool nixpkgs#procps --command bash -eu -c '
+            mkdir -p "$RUNNER_TEMP/glog"
+            xvfb-run -a --server-args="-screen 0 1280x1024x24" bash -c "
+              '"$out"'/bin/chatgpt > \"$RUNNER_TEMP/glog/out\" 2>&1 &
+              app=\$!
+              for i in \$(seq 1 60); do
+                if xdotool search --name ChatGPT >/dev/null 2>&1; then
+                  echo \"window mapped after \${i}s\"; break
+                fi
+                sleep 1
+              done
+              xdotool search --name ChatGPT >/dev/null 2>&1 || {
+                echo \"no window appeared\" >&2
+                tail -40 \"$RUNNER_TEMP/glog/out\" >&2
+                kill \$app 2>/dev/null || true
+                exit 1
+              }
+              kill \$app 2>/dev/null || true
+            "
+          '
+          if grep -qE "SIGILL|Illegal instruction|error while loading shared libraries|No usable sandbox" \
+               "$RUNNER_TEMP/glog/out"; then
+            echo "fatal pattern in the startup log:" >&2
+            grep -nE "SIGILL|Illegal instruction|error while loading|No usable sandbox" \
+              "$RUNNER_TEMP/glog/out" >&2
+            exit 1
+          fi
+          echo "graphical startup clean on ${{ matrix.system }}"
+
       - name: Summarise the ELF inventory
         run: |
           out=$(nix build .#chatgpt --no-link --print-out-paths)
@@ -256,6 +334,17 @@ jobs:
           set -eu
           # Every job must have succeeded. A skipped or cancelled required job
           # counts as a failure so nothing merges on a partially-run pipeline.
+          case '${{ github.event_name }}' in
+            pull_request|push|merge_group) ;;
+            *)
+              echo "ci-ok refuses to report for event" \
+                   "'${{ github.event_name }}'." >&2
+              echo "This context gates merges into a protected branch and is" >&2
+              echo "only meaningful for pull_request, push and merge_group." >&2
+              exit 1
+              ;;
+          esac
+
           failed=0
           check() {
             name="$1"; result="$2"; allow_skip="${3:-no}"
@@ -270,14 +359,14 @@ jobs:
           }
 
           # changed-files-policy is the only thing constraining what an
-          # automated update may touch, so it may only be skipped for events
-          # that cannot merge anything: a push to an already-protected branch,
-          # or a manual dispatch. In particular a merge_group run must NOT be
-          # allowed to pass without it — that would let a queued automation PR
-          # bypass the file-scope gate entirely.
+          # automated update may touch, so it may only be skipped for the one
+          # event that cannot introduce a change: a push to the already-
+          # protected branch. A merge_group run must NOT pass without it, and
+          # there is no workflow_dispatch trigger precisely so a manual run
+          # cannot mint this context either.
           policy_skip=no
           case '${{ github.event_name }}' in
-            push|workflow_dispatch) policy_skip=yes ;;
+            push) policy_skip=yes ;;
             merge_group)
               echo "merge_group runs require the changed-file policy, but the" >&2
               echo "job is currently gated on pull_request only. Extend that" >&2

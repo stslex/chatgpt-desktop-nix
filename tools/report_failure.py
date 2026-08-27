@@ -3,17 +3,21 @@
 
 The updater retries on a schedule, so a candidate that fails today will be
 retried tomorrow and the day after. Filing a fresh issue each time would bury
-the signal in noise, so this keeps one issue per upstream version and appends a
-comment to it on each subsequent failure.
+the signal, so this keeps one issue per upstream version and appends a comment
+on each subsequent failure.
 
-The issue title carries the version, which is what makes deduplication work
-across runs.
+The issue is keyed on the version alone, deliberately. Keying it on version
+plus failure class would file a second issue the moment the same candidate
+failed a different way — which is exactly what happens as a broken version
+moves from "trust failure" to "build failure" and back, and is the opposite of
+deduplication.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 
@@ -47,11 +51,21 @@ KIND_DESCRIPTIONS = {
         "test, the interpreter-window regression, a bundled helper, or the "
         "sandbox bridge. Review the logs before allowing this version.",
     ),
+    "timeout": (
+        "Job timeout",
+        "A CI job exceeded its time limit or failed to start. That is usually "
+        "infrastructure rather than this package, but a build that has grown "
+        "past its budget looks the same, so it is worth a glance.",
+    ),
     "unknown": (
         "Unclassified failure",
         "The updater failed in a way it could not classify. See the run log.",
     ),
 }
+
+#: The updater sanitises versions to this shape before they reach a branch
+#: name, and the branch name is where this value comes from.
+VERSION_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 
 def gh(*args: str) -> str:
@@ -69,53 +83,62 @@ def main() -> int:
     parser.add_argument("--run-url", required=True)
     args = parser.parse_args()
 
+    version = args.version.strip()
+    if not VERSION_RE.match(version):
+        # Never let an unconstrained string reach an issue title.
+        raise SystemExit(f"refusing to report on version {version!r}")
+
     kind = args.kind if args.kind in KIND_DESCRIPTIONS else "unknown"
     heading, explanation = KIND_DESCRIPTIONS[kind]
-    title = f"Upstream update {args.version} failed: {heading.lower()}"
+
+    # Keyed on the version only. The failure class goes in the body, where it
+    # can change between runs without splitting the thread.
+    title = f"Upstream update {version} cannot land"
     label = "automated-update-failure"
 
-    # One issue per version. Search by exact title among open issues.
     existing = json.loads(
         gh("issue", "list", "--repo", args.repo, "--state", "open",
            "--json", "number,title", "--limit", "100") or "[]"
     )
     match = next((i for i in existing if i["title"] == title), None)
 
-    body = f"""**Failure class:** {heading}
+    body = f"""Automated updates for `{version}` are not landing.
+
+**Latest failure:** {heading}
 
 {explanation}
 
 | | |
 | --- | --- |
-| Upstream version | `{args.version}` |
+| Upstream version | `{version}` |
 | Failure class | `{kind}` |
 | Workflow run | {args.run_url} |
 
 The protected branch and the current release are unchanged. If an automation
 pull request was opened for this version it is still open and unmerged.
 
-A later scheduled run will retry the same candidate. This issue is updated
-rather than duplicated, so repeated failures appear as comments below.
+A later scheduled run will retry the same candidate. This issue is keyed on the
+version, so repeated failures — including failures of a different kind — appear
+as comments below rather than as new issues.
 """
 
     if match is None:
-        # The label may already exist; that is not an error.
         subprocess.run(
             ["gh", "label", "create", label, "--repo", args.repo,
              "--description", "The signed updater could not land a version",
              "--color", "d73a4a"],
             capture_output=True, text=True,
         )
-        number = gh("issue", "create", "--repo", args.repo,
-                    "--title", title, "--body", body,
-                    "--label", label).strip()
-        print(f"opened issue for {args.version}: {number}")
+        url = gh("issue", "create", "--repo", args.repo,
+                 "--title", title, "--body", body,
+                 "--label", label).strip()
+        print(f"opened issue for {version}: {url}")
     else:
         gh("issue", "comment", str(match["number"]), "--repo", args.repo,
-           "--body", f"Retried and failed again.\n\n"
+           "--body", f"Failed again — **{heading}**.\n\n"
                      f"- Workflow run: {args.run_url}\n"
                      f"- Failure class: `{kind}`")
-        print(f"updated existing issue #{match['number']} for {args.version}")
+        print(f"updated existing issue #{match['number']} for {version}")
     return 0
 
 

@@ -8,17 +8,18 @@ name: Release
 # application are not ours to redistribute; consumers fetch them from OpenAI at
 # build time, verified against the signed metadata in sources.json.
 
+# Triggered only by a successful CI run. There is deliberately no
+# workflow_dispatch: a manual dispatch can select any ref, and this workflow
+# holds `contents: write` and creates immutable tags. Dispatching it against a
+# feature branch would mint a release tag for an untrusted tree.
+#
+# Using `workflow_run` rather than `push` also means a release can never be cut
+# for a commit whose CI has not finished and passed -- including the native
+# ARM64 build, which the release notes claim was verified.
 on:
-  push:
-    branches: [main]
-    paths:
-      - "sources.json"
-      - "nix/**"
-      - "tools/**"
-      - "flake.nix"
-      - "flake.lock"
-      - "elf-baseline/**"
-  workflow_dispatch:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
 
 concurrency:
   group: release
@@ -30,6 +31,13 @@ permissions:
 jobs:
   gate:
     name: Repeat the release-critical gates
+    # Every one of these must hold. Individually they are cheap; together they
+    # are what makes "released only from trusted, fully-tested main" true.
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     outputs:
@@ -39,11 +47,26 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          # Pin to the exact commit that was pushed, not to whatever main
-          # points at by the time this job starts.
-          ref: ${{ github.sha }}
+          # The exact commit CI passed for, not whatever main points at by the
+          # time this job starts.
+          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Confirm this commit is still the tip of protected main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -eu
+          tip="$(gh api "repos/${{ github.repository }}/commits/main" --jq .sha)"
+          if [ "$tip" != "$HEAD_SHA" ]; then
+            echo "main has moved on: CI passed for $HEAD_SHA but main is now" >&2
+            echo "$tip. A release for a superseded commit would be wrong; the" >&2
+            echo "run for the newer commit will publish instead." >&2
+            exit 1
+          fi
+          echo "confirmed $HEAD_SHA is the tip of main"
 
       - name: Free up disk space
         run: |
@@ -65,7 +88,7 @@ jobs:
           set -eu
           version="$(python3 -c 'import json;print(json.load(open("sources.json"))["version"])')"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "sha=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
 
           # A Debian version may legitimately contain ':' (epoch) and '~'
           # (pre-release), neither of which is valid in a git ref. Left as-is,
@@ -80,7 +103,7 @@ jobs:
           n=1
           while git rev-parse -q --verify "refs/tags/chatgpt-$slug-nix$n" >/dev/null; do
             existing="$(git rev-parse "refs/tags/chatgpt-$slug-nix$n^{commit}")"
-            if [ "$existing" = "${{ github.sha }}" ]; then
+            if [ "$existing" = "${{ github.event.workflow_run.head_sha }}" ]; then
               echo "tag chatgpt-$slug-nix$n already points at this commit"
               echo "tag=chatgpt-$slug-nix$n" >> "$GITHUB_OUTPUT"
               echo "exists=true" >> "$GITHUB_OUTPUT"
