@@ -201,34 +201,16 @@ jobs:
         run: |
           set -eu
           out=$(nix build .#chatgpt --no-link --print-out-paths)
-          nix shell nixpkgs#xvfb-run nixpkgs#xdotool nixpkgs#procps --command bash -eu -c '
-            mkdir -p "$RUNNER_TEMP/glog"
-            xvfb-run -a --server-args="-screen 0 1280x1024x24" bash -c "
-              '"$out"'/bin/chatgpt > \"$RUNNER_TEMP/glog/out\" 2>&1 &
-              app=\$!
-              for i in \$(seq 1 60); do
-                if xdotool search --name ChatGPT >/dev/null 2>&1; then
-                  echo \"window mapped after \${i}s\"; break
-                fi
-                sleep 1
-              done
-              xdotool search --name ChatGPT >/dev/null 2>&1 || {
-                echo \"no window appeared\" >&2
-                tail -40 \"$RUNNER_TEMP/glog/out\" >&2
-                kill \$app 2>/dev/null || true
-                exit 1
-              }
-              kill \$app 2>/dev/null || true
-            "
-          '
-          if grep -qE "SIGILL|Illegal instruction|error while loading shared libraries|No usable sandbox" \
-               "$RUNNER_TEMP/glog/out"; then
-            echo "fatal pattern in the startup log:" >&2
-            grep -nE "SIGILL|Illegal instruction|error while loading|No usable sandbox" \
-              "$RUNNER_TEMP/glog/out" >&2
-            exit 1
-          fi
-          echo "graphical startup clean on ${{ matrix.system }}"
+          nix shell nixpkgs#xvfb-run nixpkgs#xdotool nixpkgs#procps \
+            --command bash tools/graphical-smoke.sh "$out" \
+              "$RUNNER_TEMP/graphical-${{ matrix.system }}"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: graphical-log-${{ matrix.system }}
+          path: ${{ runner.temp }}/graphical-${{ matrix.system }}/
+          retention-days: 14
 
       - name: Summarise the ELF inventory
         run: |
