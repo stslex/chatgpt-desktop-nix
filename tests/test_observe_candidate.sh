@@ -161,5 +161,62 @@ else
 fi
 rm -rf "$root"
 
+echo "== a lookalike branch elsewhere must not hijack the observation =="
+# `git ls-remote --heads <remote> automation/chatgpt-X` matches any head whose
+# name ENDS with that path, so an ordinary branch like
+# `wip/automation/chatgpt-X` also matches -- and sorts first, so reading line
+# one takes the wrong branch's object id and sources.json. The query must name
+# the fully-qualified ref.
+root="$(setup_remote "$SOURCES")"
+(
+    cd "$root/work"
+    git checkout -q -B decoy main 2>/dev/null || git checkout -q -B decoy
+    # A decoy whose sources.json is valid but records a different package, so
+    # picking it up would be visible rather than silently equivalent.
+    printf '%s' "${SOURCES/pool\/main\/c\/chatgpt\/a.deb/pool\/main\/c\/chatgpt\/EVIL.deb}" \
+        > sources.json
+    git add sources.json; git commit -q -m decoy
+    git push -q origin 'HEAD:refs/heads/AAA/automation/chatgpt-26.820.71523'
+)
+real_oid="$(git ls-remote "$root/remote.git" \
+    'refs/heads/automation/chatgpt-26.820.71523' | awk '{print $1}')"
+decoy_oid="$(git ls-remote "$root/remote.git" \
+    'refs/heads/AAA/automation/chatgpt-26.820.71523' | awk '{print $1}')"
+
+# Assert the fixture actually creates the ambiguity, or the case proves nothing.
+matches="$(git ls-remote --heads "$root/remote.git" \
+    'automation/chatgpt-26.820.71523' | wc -l)"
+if [ "$matches" -lt 2 ] || [ "$real_oid" = "$decoy_oid" ]; then
+    bad "lookalike branch" \
+        "fixture broken: --heads matched $matches ref(s); the ambiguity this
+     case exists for is not present"
+else
+    run_observe "$root/remote.git" 'automation/chatgpt-26.820.71523' '26.820.71523'
+    if grep -q "oid=$decoy_oid" <<<"$OUT"; then
+        bad "lookalike branch" \
+            "observed the DECOY branch ($decoy_oid); its sources.json would be
+     compared as this candidate's record and its oid bound into the push lease"
+    elif [ "$RC" -eq 0 ] && grep -q "oid=$real_oid" <<<"$OUT"; then
+        ok "lookalike branch present -> the exact ref is still observed"
+    else
+        bad "lookalike branch" "exit=$RC output=$OUT"
+    fi
+fi
+rm -rf "$root"
+
+echo "== a diagnostic on stderr must not be parsed as an object id =="
+# The oid is extracted from this stream, so anything merged into it is input to
+# that parser.
+root="$(setup_remote "$SOURCES")"
+run_observe "$root/remote.git" 'automation/chatgpt-26.820.71523' '26.820.71523'
+if [ "$RC" -eq 0 ] \
+   && [ "$(grep -c '^oid=' <<<"$OUT")" -eq 1 ] \
+   && grep -qE '^oid=[0-9a-f]{40}$' <<<"$OUT"; then
+    ok "exactly one well-formed oid line is emitted"
+else
+    bad "oid line" "exit=$RC output=$OUT"
+fi
+rm -rf "$root"
+
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

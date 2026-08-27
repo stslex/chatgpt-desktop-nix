@@ -269,6 +269,54 @@ class TestRefEncoding(unittest.TestCase):
         self.assertNotIn("..", T.encode_version_for_ref("1..0"))
         self.assertFalse(T.encode_version_for_ref("1.lock").endswith(".lock"))
 
+    #: Versions whose encodings previously broke something. Debian revisions,
+    #: epochs, tildes and pluses are ordinary upstream syntax, not exotica.
+    AWKWARD = ["26.820.71523", "26.820.71523-1", "1.2.3~rc1", "1:2.3",
+               "1.2+b1", "1.2.", "1.0.", "1..0", "1.lock", "1.0.lock"]
+
+    def test_every_encoded_version_is_a_valid_branch_and_tag_ref(self):
+        # The automation branch puts the encoded version LAST, so a trailing
+        # '.' makes the whole ref invalid -- `git check-ref-format` rejects
+        # `refs/heads/automation/chatgpt-1.2.` -- and the updater's push fails
+        # with nothing having gone wrong upstream. --allow-onelevel is not used
+        # here: these are the real, fully-qualified refs.
+        import shutil
+        import subprocess
+        if not shutil.which("git"):
+            self.skipTest("git is unavailable")
+        for version in self.AWKWARD + self.COLLIDING:
+            encoded = T.encode_version_for_ref(version)
+            for ref in (f"refs/heads/automation/chatgpt-{encoded}",
+                        f"refs/tags/chatgpt-{encoded}-nix1"):
+                with self.subTest(version=version, ref=ref):
+                    self.assertEqual(
+                        subprocess.run(["git", "check-ref-format", ref],
+                                       capture_output=True).returncode,
+                        0, f"{ref} is not a valid git ref")
+
+    def test_the_changed_file_policy_recognises_every_real_branch_name(self):
+        # If these drift apart the failure is silent and one-directional: a
+        # branch the policy does not recognise is treated as an ordinary human
+        # pull request, and the sources.json-only rule is skipped for a change
+        # that merges without review. That is how '%' came to be missing from
+        # the pattern.
+        import check_changed_files as C
+        for version in self.AWKWARD + self.COLLIDING:
+            branch = "automation/chatgpt-" + T.encode_version_for_ref(version)
+            with self.subTest(version=version, branch=branch):
+                self.assertTrue(
+                    C.AUTOMATION_BRANCH.match(branch),
+                    f"{branch} is a real automation branch the policy would "
+                    f"skip")
+
+    def test_the_changed_file_policy_still_rejects_other_branches(self):
+        import check_changed_files as C
+        for branch in ["main", "feat/x", "automation/chatgpt-",
+                       "automation/chatgpt-a b", "automation/chatgpt-%zz",
+                       "automation/chatgpt-x/y", "xautomation/chatgpt-1.0"]:
+            with self.subTest(branch=branch):
+                self.assertFalse(C.AUTOMATION_BRANCH.match(branch))
+
     def test_an_implausible_version_is_refused_before_encoding(self):
         for bad in ["", "../etc", "a1.0", "1.0 2"]:
             with self.subTest(bad=bad), self.assertRaises(T.TrustError):

@@ -35,19 +35,37 @@ backoff="${OBSERVE_BACKOFF:-5}"
 state=""
 oid=""
 
+errlog="$(mktemp)"
+trap 'rm -f "$errlog"' EXIT
+
 for attempt in $(seq 1 "$attempts"); do
     # Capture the status directly from the command. Writing this as
     #   if git ls-remote ...; then ...; fi
     #   rc=$?
     # reads $? from the *if statement*, which succeeds whenever no branch runs
     # -- so rc is 0 for a missing ref and the exit-2 case is never seen.
-    listing="$(git ls-remote --exit-code --heads "$remote" "$branch" 2>&1)"
+    #
+    # The pattern is the FULLY-QUALIFIED ref, and that is not cosmetic.
+    # `git ls-remote --heads <remote> automation/chatgpt-1.0.0` matches any head
+    # whose name *ends* with that path, so an unrelated branch such as
+    # `wip/automation/chatgpt-1.0.0` also matches and, sorting earlier, comes
+    # first in the output. Taking line one would then read another branch's
+    # object id and sources.json as this candidate's record.
+    #
+    # stderr goes to its own file rather than into `listing`: this string is
+    # parsed for an object id, and a diagnostic line merged into it is input to
+    # that parser.
+    listing="$(git ls-remote --exit-code "$remote" "refs/heads/$branch" \
+        2>"$errlog")"
     rc=$?
 
     case "$rc" in
         0)
             state=exists
-            oid="$(printf '%s\n' "$listing" | awk 'NR==1 {print $1}')"
+            # Belt and braces: take the object id only from the line whose ref
+            # name is exactly the one asked for.
+            oid="$(printf '%s\n' "$listing" \
+                | awk -v want="refs/heads/$branch" '$2 == want {print $1; exit}')"
             break
             ;;
         2)
@@ -55,7 +73,7 @@ for attempt in $(seq 1 "$attempts"); do
             break
             ;;
         *)
-            echo "ls-remote could not answer (exit $rc): $listing" >&2
+            echo "ls-remote could not answer (exit $rc): $(cat "$errlog")" >&2
             if [ "$attempt" -lt "$attempts" ]; then
                 echo "  retry $attempt/$((attempts - 1))" >&2
                 sleep $(( attempt * backoff ))
@@ -86,8 +104,22 @@ fi
 # is a failure, never an absence.
 if ! git fetch --quiet --depth=1 "$remote" "+$oid:refs/observed/candidate" \
         2>/dev/null \
-   && ! git fetch --quiet --depth=1 "$remote" "+$branch:refs/observed/candidate"; then
+   && ! git fetch --quiet --depth=1 "$remote" \
+        "+refs/heads/$branch:refs/observed/candidate"; then
     echo "$branch exists but could not be fetched" >&2
+    exit 30
+fi
+
+# Whichever fetch succeeded, what landed must be the object that was observed.
+# The by-name fallback resolves the branch again, and the branch can have moved
+# between the ls-remote above and this fetch -- in which case the sources.json
+# read below would describe one commit while the object id reported to the
+# caller, and bound into the push lease, names another.
+fetched="$(git rev-parse --verify --quiet refs/observed/candidate^{commit})"
+if [ "$fetched" != "$oid" ]; then
+    echo "$branch was $oid when observed but $fetched when fetched." >&2
+    echo "The branch moved mid-observation, so no single state was seen" >&2
+    echo "whole. A later scheduled run will retry the same candidate." >&2
     exit 30
 fi
 

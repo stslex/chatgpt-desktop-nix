@@ -23,7 +23,24 @@ import re
 import subprocess
 import sys
 
-AUTOMATION_BRANCH = re.compile(r"^automation/chatgpt-[A-Za-z0-9._-]+$")
+sys.path.insert(0, __file__.rsplit("/", 1)[0])
+
+import apt_trust as T  # noqa: E402
+
+#: Automation branches are named `automation/chatgpt-<encoded-version>`, where
+#: the encoding is :func:`apt_trust.encode_version_for_ref`. The pattern is
+#: derived from that function's own safe-character set rather than written out
+#: by hand, because the two drifting apart is silent and one-directional: a
+#: branch this does not recognise is treated as an ordinary human pull request
+#: and the strict file policy is skipped entirely.
+#:
+#: Hand-writing it is exactly how '%' came to be missing here, which meant any
+#: upstream version with a Debian revision, epoch, tilde or plus -- `26.1.0-1`
+#: encodes to `26.1.0%2D1` -- produced a real automation branch that this file
+#: silently waved through.
+_SAFE = "".join(sorted(T._REF_SAFE))
+AUTOMATION_BRANCH = re.compile(
+    r"^automation/chatgpt-(?:[" + re.escape(_SAFE) + r"]|%[0-9A-F]{2})+$")
 
 #: The only path an automation pull request may modify.
 ALLOWED = frozenset({"sources.json"})

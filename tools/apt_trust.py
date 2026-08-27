@@ -165,9 +165,12 @@ def encode_version_for_ref(version: str) -> str:
     refs. '%' itself is encoded first, so the mapping stays one-to-one.
 
     Git also forbids a component that begins or ends with '.', contains '..',
-    or ends '.lock'; VERSION_RE already requires a leading digit, and '.' is
-    the only one of those characters left unencoded, so only the '..' and
-    '.lock' cases need handling.
+    or ends '.lock'. '.' is the only one of those characters left unencoded.
+    VERSION_RE requires a leading digit, so a component cannot begin with one,
+    but it can certainly end with one -- and the automation branch name puts
+    the encoded version last, so `1.2.` would produce
+    `automation/chatgpt-1.2.`, which `git check-ref-format` rejects. All three
+    cases are handled below.
     """
     validate_version(version)
     out = []
@@ -184,6 +187,11 @@ def encode_version_for_ref(version: str) -> str:
         encoded = encoded.replace("..", ".%2E", 1)
     if encoded.endswith(".lock"):
         encoded = encoded[:-5] + "%2Elock"
+    # A component may not end with '.'. The automation branch name ends with
+    # this string, so a trailing dot makes the whole ref invalid and the push
+    # fails with nothing having gone wrong upstream.
+    if encoded.endswith("."):
+        encoded = encoded[:-1] + "%2E"
     return encoded
 
 
