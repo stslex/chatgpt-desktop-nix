@@ -257,6 +257,60 @@ jobs:
           path: ${{ runner.temp }}/graphical-${{ matrix.system }}/
           retention-days: 14
 
+      - name: Native bwrap/nix-ld bridge gate
+        run: |
+          set -eu
+          # The NixOS VM covers this on x86_64 only, because a VM test needs a
+          # machine of the same architecture to boot. On ARM this is the gate:
+          # the real shim, real bubblewrap, and a genuinely generic binary that
+          # has to actually execute.
+          if ! unshare --user --map-root-user true 2>/dev/null; then
+            echo "::notice title=Bridge gate skipped::this runner does not" \
+                 "permit unprivileged user namespaces, which bubblewrap needs"
+            exit 0
+          fi
+
+          out=$(nix build .#chatgpt --no-link --print-out-paths)
+          shim=$(nix build .#chatgpt.bwrapShim --no-link --print-out-paths)
+
+          nix shell nixpkgs#gcc nixpkgs#patchelf nixpkgs#bubblewrap \
+            nixpkgs#nix-ld --command bash -eu -c '
+              case "${{ matrix.system }}" in
+                x86_64-linux)  interp=/lib64/ld-linux-x86-64.so.2 ;;
+                aarch64-linux) interp=/lib/ld-linux-aarch64.so.1 ;;
+                *) echo "unknown system" >&2; exit 1 ;;
+              esac
+
+              printf "%s\n" \
+                "#include <stdio.h>" \
+                "int main(void){printf(\"GENERIC-BINARY-RAN-OK\\n\");return 0;}" \
+                > probe.c
+              gcc -O0 -o probe probe.c
+              patchelf --set-interpreter "$interp" --set-rpath "" probe
+
+              got=$(patchelf --print-interpreter probe)
+              [ "$got" = "$interp" ] || {
+                echo "probe interpreter is $got, expected $interp" >&2; exit 1; }
+
+              # The generic loader has to exist for the bridge to bind over it.
+              if [ ! -e "$interp" ]; then
+                echo "::notice title=Bridge gate skipped::$interp is absent," \
+                     "so there is no generic loader to bridge"
+                exit 0
+              fi
+
+              echo "running the probe through the packaged bwrap shim"
+              output=$(PATH="'"$shim"'/bin:$PATH" bwrap \
+                --unshare-user --unshare-net --ro-bind / / \
+                --proc /proc --dev /dev -- "$PWD/probe" 2>&1) || {
+                  echo "the bridge failed:" >&2; echo "$output" >&2; exit 1; }
+              echo "$output"
+              case "$output" in
+                *GENERIC-BINARY-RAN-OK*) echo "bridge OK on ${{ matrix.system }}" ;;
+                *) echo "unexpected output" >&2; exit 1 ;;
+              esac
+            '
+
       - name: Summarise the ELF inventory
         run: |
           out=$(nix build .#chatgpt --no-link --print-out-paths)

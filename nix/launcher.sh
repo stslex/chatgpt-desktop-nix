@@ -39,43 +39,46 @@ warn() {
 # papering over it by turning the sandbox off.
 
 check_user_namespaces() {
-    local knob
+    # Actually try to create one.
+    #
+    # Reading sysctls tells you about two of the ways namespaces can be denied
+    # and nothing about the rest. Ubuntu restricts them through AppArmor, a
+    # container may drop the capability, seccomp may block the syscall, and a
+    # hardened kernel may refuse for its own reasons -- in every one of those
+    # cases the sysctls look fine and Chromium's zygote still dies with SIGTRAP
+    # and no output at all. Only the attempt is conclusive.
+    if unshare --user --map-root-user true 2>/dev/null; then
+        return 0
+    fi
+
+    # It failed. Now read the sysctls, purely so the message can say something
+    # actionable rather than "it did not work".
+    local detail=""
+    local knob value
     for knob in /proc/sys/kernel/unprivileged_userns_clone \
-                /proc/sys/user/max_user_namespaces; do
+                /proc/sys/user/max_user_namespaces \
+                /proc/sys/kernel/apparmor_restrict_unprivileged_userns; do
         [[ -r "$knob" ]] || continue
-        local value
         value="$(cat "$knob" 2>/dev/null || echo)"
-        case "$knob" in
-            */unprivileged_userns_clone)
-                if [[ "$value" == "0" ]]; then
-                    die "unprivileged user namespaces are disabled ($knob = 0).
+        detail+="
+    $knob = $value"
+    done
 
-ChatGPT Desktop relies on them for Chromium's sandbox, and this package
-deliberately offers no escape hatch that disables that sandbox.
+    die "unprivileged user namespaces are not available.
 
-On NixOS, enable them with:
+Chromium's sandbox needs them, the upstream package ships no setuid helper, and
+this package deliberately offers no escape hatch that disables that sandbox.
+Relevant kernel settings on this host:$detail
 
-    boot.kernel.sysctl.\"kernel.unprivileged_userns_clone\" = true;
-
-then rebuild and log in again."
-                fi
-                ;;
-            */max_user_namespaces)
-                if [[ "$value" == "0" ]]; then
-                    die "user namespaces are disabled ($knob = 0).
-
-ChatGPT Desktop relies on them for Chromium's sandbox, and this package
-deliberately offers no escape hatch that disables that sandbox.
-
-On NixOS, raise the limit with:
+On NixOS, if you have turned them off:
 
     boot.kernel.sysctl.\"user.max_user_namespaces\" = 28633;
 
-then rebuild and log in again."
-                fi
-                ;;
-        esac
-    done
+On a Debian or Ubuntu host, AppArmor may be the cause:
+
+    sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+then log in again."
 }
 
 # ---------------------------------------------------------------------------
@@ -103,12 +106,35 @@ degrade() {
     printf '%s' "$2"
 }
 
+# Is a published cache actually usable?
+#
+# The completion marker says a publish finished, not that what it published is
+# still intact. A cache can be damaged afterwards -- a partial disk, a stray
+# rm, an interrupted copy by something else -- and the marker would still be
+# there. Check the structure the app depends on before handing the path over.
+cache_is_valid() {
+    local dir="$1" resources="$2"
+    [[ -e "$dir/.complete" ]] || return 1
+    [[ -d "$dir/plugins" ]] || return 1
+    # The bundled-plugin tree the app resolves against.
+    [[ -d "$dir/plugins/openai-bundled/plugins" ]] || return 1
+    # Every immutable resource must still be present as a symlink that
+    # resolves; a dangling one means the store path it pointed at is gone.
+    local entry base
+    for entry in "$resources"/*; do
+        base="$(basename "$entry")"
+        [[ "$base" == "plugins" ]] && continue
+        [[ -e "$dir/$base" ]] || return 1
+    done
+    return 0
+}
+
 publish_plugin_cache() {
     local resources="$1" cache_root="$2" key="$3"
     local final="$cache_root/$key"
     local stamp="$final/.complete"
 
-    if [[ -e "$stamp" ]]; then
+    if cache_is_valid "$final" "$resources"; then
         printf '%s' "$final"
         return 0
     fi
@@ -132,16 +158,19 @@ publish_plugin_cache() {
         return 0
     fi
 
-    # Re-check: another launch may have finished while we waited.
-    if [[ -e "$stamp" ]]; then
+    # Re-check under the lock: another launch may have finished while we
+    # waited, and it may equally have published something damaged.
+    if cache_is_valid "$final" "$resources"; then
         exec {lock_fd}>&-
         printf '%s' "$final"
         return 0
     fi
 
-    # A directory without the stamp is a partial or interrupted build. Discard
-    # it; the stamp is only ever written after a successful, flushed publish.
+    # Anything else -- no marker, or a marker over a tree that no longer holds
+    # what it should -- is rebuilt from scratch under this lock rather than
+    # trusted.
     if [[ -e "$final" ]]; then
+        warn "discarding an incomplete or damaged plugin cache at $final"
         chmod -R u+w "$final" 2>/dev/null || true
         rm -rf "$final"
     fi
@@ -192,9 +221,9 @@ publish_plugin_cache() {
 
     if ! mv -T "$staging" "$final" 2>/dev/null; then
         # Lost a race against another publisher, or the rename failed. If a
-        # complete cache is now there, use it; otherwise fall back.
+        # valid cache is now there, use it; otherwise fall back.
         rm -rf "$staging"
-        if [[ ! -e "$stamp" ]]; then
+        if ! cache_is_valid "$final" "$resources"; then
             exec {lock_fd}>&-
             degrade "could not publish the plugin cache" "$resources"
             return 0

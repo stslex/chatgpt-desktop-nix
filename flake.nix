@@ -47,8 +47,14 @@
           pkgs = pkgsFor system;
           chatgpt = self.packages.${system}.chatgpt;
         in
-        (import ./nix/checks.nix { inherit pkgs chatgpt system self; }) // {
-          package = chatgpt;
+        (import ./nix/checks.nix { inherit pkgs chatgpt system self; })
+        // { package = chatgpt; }
+        # The NixOS VM test needs a machine of the same architecture to boot.
+        # Advertising it for aarch64 while nothing can run it there claims a
+        # gate that does not exist; the native ARM runner covers the same
+        # ground with a direct bridge and launcher gate instead.
+        // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
+          vm-smoke = import ./nix/vm-test.nix { inherit pkgs chatgpt; };
         });
 
       devShells = forAllSystems (system:

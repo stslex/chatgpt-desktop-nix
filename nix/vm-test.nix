@@ -4,6 +4,14 @@ let
   # A genuinely generic dynamically-linked ELF: real glibc binary whose
   # PT_INTERP names the path a downloaded toolchain would name. Nothing about
   # it is Nix-aware, which is the point.
+  # The loader path a downloaded toolchain names differs per architecture;
+  # hardcoding the x86_64 one made this test meaningless on aarch64, where the
+  # binary would simply have the wrong interpreter rather than the generic one.
+  genericInterpreter = {
+    x86_64-linux = "/lib64/ld-linux-x86-64.so.2";
+    aarch64-linux = "/lib/ld-linux-aarch64.so.1";
+  }.${pkgs.stdenv.hostPlatform.system};
+
   genericBinary = pkgs.runCommandCC "generic-interp-probe" { } ''
     mkdir -p "$out/bin"
     cat > probe.c <<'EOF'
@@ -12,8 +20,15 @@ let
     EOF
     cc -O0 -o "$out/bin/probe" probe.c
     ${pkgs.patchelf}/bin/patchelf \
-      --set-interpreter /lib64/ld-linux-x86-64.so.2 \
+      --set-interpreter ${genericInterpreter} \
       --set-rpath "" "$out/bin/probe"
+    # Assert it really is generic: a probe still pointing into the store would
+    # run regardless of the bridge and prove nothing.
+    got="$(${pkgs.patchelf}/bin/patchelf --print-interpreter "$out/bin/probe")"
+    if [ "$got" != "${genericInterpreter}" ]; then
+      echo "probe interpreter is $got, expected ${genericInterpreter}" >&2
+      exit 1
+    fi
   '';
 in
 
@@ -177,6 +192,18 @@ pkgs.testers.runNixOSTest {
         machine.log(f"helpers: {len(first)} -> {len(second)}, "
                     f"{len(survived)} survived, {len(replaced)} replaced")
 
+        # A count is not a shape. Electron must actually have the helper roles
+        # it needs; a browser process alone with no zygote and no renderer
+        # would satisfy a count check and be a broken application.
+        roles = machine.succeed("ps -eo args | grep '[C]hatGPT' || true")
+        for flag, role in (("--type=zygote", "zygote"),
+                           ("--type=renderer", "renderer")):
+            assert flag in roles, (
+                f"no {role} process is running; Electron did not bring up its "
+                f"helper processes.\n{roles[:2000]}"
+            )
+        machine.log("zygote and renderer processes are present")
+
         # Some churn is normal (a utility process finishing its work). A
         # majority being replaced inside 20 seconds is not.
         assert len(survived) >= len(first) / 2, (
@@ -213,6 +240,38 @@ pkgs.testers.runNixOSTest {
             f"the generic binary did not run through the bridge (rc={rc}):\n{out}"
         )
         assert rc == 0, f"bridge exited {rc}"
+
+    with subtest("the bridge works when bwrap is found on PATH by name"):
+        # The real Codex path does not invoke our shim by absolute path -- it
+        # runs "bwrap" and takes whatever PATH resolves. Exercising only the
+        # absolute path would leave the thing that actually happens untested.
+        shim_dir = "${chatgpt.bwrapShim}/bin"
+        rc, out = machine.execute(
+            f"su - alice -c 'PATH={shim_dir}:$PATH "
+            "bwrap --unshare-user --unshare-net --ro-bind / / "
+            "--proc /proc --dev /dev "
+            "-- ${genericBinary}/bin/probe' 2>&1")
+        machine.log(f"via PATH lookup: rc={rc} {out.strip()[:160]}")
+        assert "GENERIC-BINARY-RAN-OK" in out, (
+            f"the bridge did not apply when bwrap came from PATH (rc={rc}):\n{out}"
+        )
+        # And the resolved bwrap must be ours, not the real one.
+        which = machine.succeed(
+            f"su - alice -c 'PATH={shim_dir}:$PATH command -v bwrap'").strip()
+        assert which.startswith("${chatgpt.bwrapShim}"), which
+
+    with subtest("the launcher puts the shim ahead of the real bwrap"):
+        # The launcher is what arranges this on a NixOS host, and it only does
+        # so when /etc/NIXOS exists -- which it does here.
+        machine.succeed("test -e /etc/NIXOS")
+        launcher = machine.succeed("cat ${chatgpt}/bin/chatgpt")
+        assert "${chatgpt.bwrapShim}/bin" in launcher, (
+            "the launcher does not reference the shim directory"
+        )
+        assert 'PATH="${chatgpt.bwrapShim}/bin:$PATH"' in launcher, (
+            "the shim is not prepended to PATH, so the real bwrap would win"
+        )
+        machine.log("launcher prepends the shim directory to PATH")
 
     with subtest("the shim does not disturb an ordinary sandboxed command"):
         shim = "${chatgpt.bwrapShim}/bin/bwrap"

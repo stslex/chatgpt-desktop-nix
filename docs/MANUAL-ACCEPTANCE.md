@@ -148,12 +148,21 @@ journalctl --user -b | grep -iE 'sigill|illegal|chatgpt'
 - [ ] Writes land in the workspace, not elsewhere
 - [ ] Denying a command actually blocks it
 
-Confirm the shim is the one being used:
+Confirm the shim is the one being used. It is a **separate derivation**, not a
+file inside the package, so globbing under the package path finds nothing:
 
 ```sh
+# The shim's own store path.
+nix build --no-link --print-out-paths \
+  "github:stslex/chatgpt-desktop-nix/<REV>#chatgpt.bwrapShim"
+
+# The launcher prepends that path, so check it is referenced:
+grep -o '/nix/store/[^"]*bwrap-shim[^"]*' \
+  "$(nix build --no-link --print-out-paths \
+     "github:stslex/chatgpt-desktop-nix/<REV>#chatgpt")/bin/chatgpt"
+
+# And that a running sandbox resolved to it:
 pgrep -af bwrap | head
-ls -l "$(nix build --no-link --print-out-paths \
-  github:stslex/chatgpt-desktop-nix#chatgpt)/bin/../"*bwrap-shim*/bin/bwrap 2>/dev/null
 ```
 
 ### 7. Downloaded generic toolchains

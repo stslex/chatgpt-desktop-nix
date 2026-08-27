@@ -546,7 +546,8 @@ in
     mkdir -p "$XDG_CACHE_HOME"
 
     # Extract the cache functions so we can call them in isolation.
-    for fn in publish_plugin_cache collect_unused_caches inuse_lock degrade; do
+    for fn in publish_plugin_cache collect_unused_caches inuse_lock degrade \
+              cache_is_valid; do
       sed -n "/^$fn()/,/^}/p" ${launcher} >> lib.sh
     done
     cat > drive.sh <<'SH'
@@ -591,6 +592,29 @@ in
     test "$(wc -l < distinct)" = 1
     test -e "$(cat distinct)/.complete"
     echo "  6 concurrent launches produced exactly one published cache"
+
+    echo "--- a stamped but DAMAGED cache is rebuilt, not trusted ---"
+    # The completion marker says a publish finished, not that what it published
+    # is still intact. A cache can be damaged afterwards and the marker would
+    # still be sitting there.
+    pubD=$(bash drive.sh "$res" "$root" keyDMG)
+    test -e "$pubD/.complete"
+    chmod -R u+w "$pubD"
+    rm -rf "$pubD/plugins/openai-bundled"
+    test -e "$pubD/.complete"
+    again=$(bash drive.sh "$res" "$root" keyDMG)
+    test "$again" = "$pubD"
+    test -d "$again/plugins/openai-bundled/plugins" \
+      || { echo "a damaged cache was handed back unrepaired" >&2; exit 1; }
+    echo "  damaged tree rebuilt under the lock"
+
+    echo "--- a cache whose immutable resources vanished is rebuilt ---"
+    pubS=$(bash drive.sh "$res" "$root" keySYM)
+    chmod -R u+w "$pubS"; rm -f "$pubS/app.asar"
+    againS=$(bash drive.sh "$res" "$root" keySYM)
+    test -e "$againS/app.asar" \
+      || { echo "a cache missing app.asar was handed back" >&2; exit 1; }
+    echo "  missing immutable resource rebuilt"
 
     echo "--- another version's cache is NOT collected ---"
     # Collecting one safely needs the exclusive lock held across the deletion.
@@ -650,9 +674,6 @@ in
     test -f ${chatgpt}/share/pixmaps/chatgpt.png
     test -f ${chatgpt}/share/icons/hicolor/512x512/apps/chatgpt.png
   '';
-
-  # A real graphical start-up in a NixOS VM. Slow, so it is the last check.
-  vm-smoke = import ./vm-test.nix { inherit pkgs chatgpt; };
 
   no-upstream-host-config = check "no-upstream-host-config" [ ] ''
     echo "we must not ship the upstream APT or AppArmor configuration"
