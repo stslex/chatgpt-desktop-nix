@@ -3,13 +3,12 @@ name: Upstream update
 # Discovers new ChatGPT Desktop releases and opens a narrowly-scoped pull
 # request for them.
 #
-# This workflow is trusted: it runs only from the default branch and it holds
-# the updater App's private key. It never runs code from a pull request.
+# This workflow is trusted: it runs only from main. An optional GitHub App
+# allows unattended CI and auto-merge. It never runs code from a pull request.
 #
-# The pull request is created with a GitHub App installation token rather than
-# GITHUB_TOKEN, because events created by GITHUB_TOKEN do not start further
-# workflow runs — a PR opened with it would sit forever with no CI, and
-# auto-merge would never have a required check to wait for.
+# Without App credentials it creates the PR with GITHUB_TOKEN. GitHub requires
+# a maintainer to approve the resulting PR workflows; merging is also manual
+# so the maintainer's merge triggers main's CI and the release workflow.
 
 on:
   schedule:
@@ -30,6 +29,7 @@ permissions:
 jobs:
   update:
     name: Check for a new upstream release
+    if: github.ref == 'refs/heads/main'
     # The App private key is only available to jobs in this environment, whose
     # deployment branch policy admits `main` alone. workflow_dispatch lets a
     # caller choose any ref; without this, a feature-branch dispatch would run
@@ -39,6 +39,9 @@ jobs:
     environment: updater
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    permissions:
+      contents: write
+      pull-requests: write
     outputs:
       updated: ${{ steps.run.outputs.updated }}
       # The candidate step resolves first, so its version survives a failure in
@@ -49,8 +52,35 @@ jobs:
       branch: ${{ steps.run.outputs.branch || steps.candidate.outputs.branch }}
       failure: ${{ steps.run.outputs.failure }}
     steps:
+      - name: Select updater credentials
+        id: auth
+        env:
+          UPDATER_APP_ID: ${{ vars.UPDATER_APP_ID }}
+          UPDATER_APP_KEY_CONFIGURED: ${{ secrets.UPDATER_APP_PRIVATE_KEY != '' }}
+        run: |
+          set -eu
+          if [ -z "$UPDATER_APP_ID" ] && [ "$UPDATER_APP_KEY_CONFIGURED" != "true" ]; then
+            echo "mode=github-token" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Using GITHUB_TOKEN::Update PRs will need a maintainer to approve CI and merge them. Configure the optional updater App for unattended updates."
+            exit 0
+          fi
+          missing=0
+          if [ -z "$UPDATER_APP_ID" ]; then
+            echo "::error title=Updater configuration missing::Set the UPDATER_APP_ID repository Actions variable to the GitHub App's numeric ID. See README.md: One-time repository setup."
+            missing=1
+          fi
+          if [ "$UPDATER_APP_KEY_CONFIGURED" != "true" ]; then
+            echo "::error title=Updater configuration missing::Set UPDATER_APP_PRIVATE_KEY in the updater environment after restricting its deployment branches to main. See README.md: One-time repository setup."
+            missing=1
+          fi
+          if [ "$missing" -ne 0 ]; then
+            exit "$missing"
+          fi
+          echo "mode=app" >> "$GITHUB_OUTPUT"
+
       - name: Mint an installation token for the updater App
         id: app
+        if: steps.auth.outputs.mode == 'app'
         uses: actions/create-github-app-token@67e27a7eb7db372a1c61a7f9bdab8699e9ee57f7 # v1.11.0
         with:
           app-id: ${{ vars.UPDATER_APP_ID }}
@@ -59,7 +89,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: main
-          token: ${{ steps.app.outputs.token }}
+          token: ${{ steps.app.outputs.token || github.token }}
           fetch-depth: 0
 
       - name: Install gnupg
@@ -175,7 +205,10 @@ jobs:
       - name: Push the automation branch and open one pull request
         if: steps.run.outputs.changed == 'true'
         env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
+          AUTH_MODE: ${{ steps.auth.outputs.mode }}
+          APP_ID: ${{ vars.UPDATER_APP_ID }}
+          APP_SLUG: ${{ vars.UPDATER_APP_SLUG }}
           BRANCH: ${{ steps.run.outputs.branch }}
           VERSION: ${{ steps.run.outputs.version }}
           PREVIOUS: ${{ steps.run.outputs.previous_version }}
@@ -183,10 +216,16 @@ jobs:
           OBSERVED_OID: ${{ steps.observed.outputs.oid }}
         run: |
           set -eu
-          slug="${{ vars.UPDATER_APP_SLUG }}"
-          slug="${slug:-chatgpt-desktop-nix-updater}"
-          git config user.name "$slug[bot]"
-          git config user.email "${{ vars.UPDATER_APP_ID }}+$slug[bot]@users.noreply.github.com"
+          if [ "$AUTH_MODE" = "app" ]; then
+            slug="${APP_SLUG:-chatgpt-desktop-nix-updater}"
+            git config user.name "${slug}[bot]"
+            git config user.email "${APP_ID}+${slug}[bot]@users.noreply.github.com"
+            merge_note="Auto-merge will be enabled after eligibility verification; the required ci-ok check must pass."
+          else
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            merge_note="Created with GITHUB_TOKEN. Select Approve workflows to run in this PR, wait for ci-ok, then merge manually. Auto-merge is disabled in this mode."
+          fi
 
           git checkout -B "$BRANCH"
           git add sources.json
@@ -227,7 +266,7 @@ jobs:
           # One pull request per exact version. If a previous run already made
           # one, reuse it instead of opening a duplicate.
           existing="$(gh pr list --head "$BRANCH" --base main --state open \
-            --json number --jq '.[0].number' || true)"
+            --json number --jq '.[0].number')"
 
           if [ -n "$existing" ] && [ "$existing" != "null" ]; then
             echo "reusing existing pull request #$existing"
@@ -237,17 +276,16 @@ jobs:
               --description "Opened by the signed updater; only sources.json" \
               --color 0e8a16 2>/dev/null || true
 
-            url="$(gh pr create \
-              --base main --head "$BRANCH" \
-              --title "chatgpt-desktop: $PREVIOUS -> $VERSION" \
-              --label "automated-upstream-update" \
-              --body "Automated upstream update, opened by the signed updater.
+            pr_body="$(mktemp)"
+            trap 'rm -f "$pr_body"' EXIT
+            cat > "$pr_body" <<EOF
+          Automated upstream update, opened by the signed updater.
 
           **Version:** \`$PREVIOUS\` → \`$VERSION\`
 
-          Every check below was performed before this pull request was opened,
-          and CI repeats all of it independently rather than trusting the JSON
-          in this diff.
+          Every check below was performed before this pull request was opened.
+          CI independently verifies the pinned package signatures, hashes and
+          control fields, and applies the update policy against the base.
 
           | Step | Result |
           | --- | --- |
@@ -260,11 +298,17 @@ jobs:
           | downgrade check | passed |
           | same-version digest drift check | passed |
 
-          Only \`sources.json\` changes here. Auto-merge is enabled; the
-          required \`ci-ok\` check decides whether this lands.
+          Only \`sources.json\` changes here. $merge_note
 
           If CI fails, this pull request stays open and the protected branch and
-          the latest release are untouched.")"
+          the latest release are untouched.
+          EOF
+
+            url="$(gh pr create \
+              --base main --head "$BRANCH" \
+              --title "chatgpt-desktop: $PREVIOUS -> $VERSION" \
+              --label "automated-upstream-update" \
+              --body-file "$pr_body")"
 
             # gh prints the new pull request's URL; the number is its last path
             # component.
@@ -278,7 +322,7 @@ jobs:
           fi
 
       - name: Verify eligibility, then enable auto-merge
-        if: steps.run.outputs.changed == 'true'
+        if: steps.run.outputs.changed == 'true' && steps.auth.outputs.mode == 'app'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           BRANCH: ${{ steps.run.outputs.branch }}
@@ -310,6 +354,20 @@ jobs:
             --match-head-commit "$ELIGIBLE_HEAD_SHA"
           echo "auto-merge enabled for $ELIGIBLE_HEAD_SHA;" \
                "the required ci-ok check decides from here"
+
+      - name: Explain the manual steps for GITHUB_TOKEN pull requests
+        if: steps.run.outputs.changed == 'true' && steps.auth.outputs.mode == 'github-token'
+        run: |
+          set -eu
+          {
+            echo "Update PR: https://github.com/${{ github.repository }}/pull/$PR_NUMBER"
+            echo
+            echo "Select **Approve workflows to run** in the PR, wait for **ci-ok**,"
+            echo "then merge the PR manually. The maintainer's merge starts main's CI"
+            echo "and, after it passes, the release workflow."
+            echo
+            echo "The optional updater App enables unattended CI and auto-merge."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # -------------------------------------------------------------------
   # One deduplicated issue per upstream version that fails, so a daily
@@ -353,8 +411,16 @@ jobs:
           KIND: ${{ needs.update.outputs.failure }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          set -eu
+          # Configuration, checkout or discovery can fail before either
+          # version output exists. Keep that failure in the update job instead
+          # of raising a second error or filing an issue for an unrelated pin.
+          if [ -z "$VERSION" ]; then
+            echo "::notice title=No candidate to report::The updater failed before a version was identified. See the failed update job for the cause."
+            exit 0
+          fi
           python3 tools/report_failure.py \
             --repo "${{ github.repository }}" \
-            --version "${VERSION:?no candidate version to report}" \
+            --version "$VERSION" \
             --kind "${KIND:-unknown}" \
             --run-url "$RUN_URL"

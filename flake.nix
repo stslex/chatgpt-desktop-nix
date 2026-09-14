@@ -62,7 +62,8 @@
         {
           default = pkgs.mkShell {
             packages = with pkgs; [
-              python3 gnupg patchelf dpkg desktop-file-utils
+              (python3.withPackages (ps: [ ps.zstandard ps.pyyaml ]))
+              gnupg patchelf dpkg desktop-file-utils
               jq nix-prefetch bubblewrap
             ];
             shellHook = ''

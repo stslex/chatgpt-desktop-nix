@@ -1,8 +1,8 @@
 """Signed-APT trust chain for the official OpenAI ChatGPT Desktop repository.
 
-This module implements the verification chain used both by the updater and by
-CI's independent re-verification gate. It is deliberately import-safe and free
-of side effects so the fixture tests can drive every branch.
+This module implements the updater's APT verification chain and the package
+signature checks shared with CI. It is deliberately import-safe and free of
+side effects so the fixture tests can drive every branch.
 
 The chain, in order, is:
 
@@ -751,10 +751,10 @@ def deb_gpgorigin(deb_path: str) -> "bytes | None":
 def verify_deb_gpgorigin(deb_path: str, keyring_path: str) -> None:
     """Verify the debsigs signature over debian-binary||control||data.
 
-    This is defence in depth. It is signed by the same key as ``InRelease``, so
-    it is not an independent trust anchor and never substitutes for the
-    committed key -> InRelease -> Packages.gz -> .deb chain. It is mandatory
-    because it is consistently present on every supported architecture.
+    The updater checks this in addition to the fresh signed APT index. CI uses
+    this signature to authenticate a pinned package after newer versions have
+    replaced it in that index. Both paths use the same committed OpenAI key;
+    neither accepts a package on the strength of a matching hash alone.
     """
     assert_keyring_identity(keyring_path)
     members = _ar_members(deb_path, ordered=True)
@@ -809,7 +809,7 @@ def verify_deb_gpgorigin(deb_path: str, keyring_path: str) -> None:
 def verify_deb_control(
     deb_path: str, record: PackageRecord
 ) -> None:
-    """Assert the package's own control fields match the signed index."""
+    """Assert the package's own control fields match the expected records."""
     control = read_deb_control(deb_path)
     if control.get("Package") != PACKAGE_NAME:
         raise TrustError(
@@ -819,12 +819,12 @@ def verify_deb_control(
     if control.get("Version") != record.version:
         raise TrustError(
             f"{deb_path}: control Version {control.get('Version')!r} does not "
-            f"match signed index version {record.version!r}"
+            f"match expected version {record.version!r}"
         )
     if control.get("Architecture") != record.architecture:
         raise TrustError(
             f"{deb_path}: control Architecture {control.get('Architecture')!r} "
-            f"does not match signed index architecture {record.architecture!r}"
+            f"does not match expected architecture {record.architecture!r}"
         )
 
 

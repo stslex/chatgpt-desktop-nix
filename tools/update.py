@@ -296,7 +296,12 @@ def guard_downgrade(previous: dict, candidate: dict) -> None:
 
 
 def verify_debs(release: T.VerifiedRelease, workdir: str) -> None:
-    """Download each .deb and verify size, digest, debsigs and control fields."""
+    """Download each .deb and verify size, digest, debsigs and control fields.
+
+    The updater supplies records from the live signed APT index. CI supplies
+    validated lock-file records and independently requires the package's own
+    OpenAI signature to authenticate its control and data archives.
+    """
     for arch, record in sorted(release.records.items()):
         path = os.path.join(workdir, os.path.basename(record.filename))
         print(f"  downloading {arch}: {record.filename} ({record.size} bytes)")
@@ -305,7 +310,7 @@ def verify_debs(release: T.VerifiedRelease, workdir: str) -> None:
         actual_size = os.path.getsize(path)
         if actual_size != record.size:
             raise T.TrustError(
-                f"{arch}: downloaded size {actual_size} != signed {record.size}"
+                f"{arch}: downloaded size {actual_size} != recorded {record.size}"
             )
         digest = hashlib.sha256()
         with open(path, "rb") as fh:
@@ -313,16 +318,16 @@ def verify_debs(release: T.VerifiedRelease, workdir: str) -> None:
                 digest.update(chunk)
         if digest.hexdigest() != record.sha256:
             raise T.TrustError(
-                f"{arch}: SHA-256 mismatch — signed {record.sha256}, got "
+                f"{arch}: SHA-256 mismatch — recorded {record.sha256}, got "
                 f"{digest.hexdigest()}"
             )
-        print(f"    size + SHA-256 match the signed index")
+        print(f"    size + SHA-256 match the recorded metadata")
 
         T.verify_deb_gpgorigin(path, KEYRING_PATH)
         print(f"    debsigs _gpgorigin verified against the pinned key")
 
         T.verify_deb_control(path, record)
-        print(f"    control Package/Version/Architecture match the signed index")
+        print(f"    signed control Package/Version/Architecture match the records")
         os.unlink(path)
 
 
