@@ -438,15 +438,36 @@ It never trusts `/latest`, never trusts HTTPS alone, never does
 trust-on-first-use, and never compares Debian versions lexically — `26.820.9`
 sorts *above* `26.820.71523` as a string and *below* it as a version.
 
-An update touches **only `sources.json`**. CI enforces that, and re-derives the
-metadata from the origin independently rather than trusting the committed file.
+An update touches **only `sources.json`**. CI enforces that and verifies both
+pinned `.deb` files: their size and SHA-256 must match the pin, their embedded
+OpenAI signatures must verify with the committed key, and their signed control
+fields must match the expected package, version and architecture. Pull requests
+also retain the no-downgrade and no-same-version-drift checks against the base.
 
-### Why a GitHub App
+CI does not require the pin to be the latest release. OpenAI's APT index replaces
+the previous version when a new one ships; comparing an existing pin with that
+index would break otherwise unchanged builds and releases. The updater uses the
+fresh signed APT index to discover new versions. CI and release verification use
+the package signatures to authenticate the exact version being built.
 
-The updater opens its pull request with a short-lived GitHub App installation
-token, not `GITHUB_TOKEN`. Events created by `GITHUB_TOKEN` do not start further
-workflow runs, so a pull request opened with it would sit with no CI at all and
-auto-merge would never have a required check to wait on.
+### Credentials and merging
+
+By default the updater uses the repository's `GITHUB_TOKEN`; no App ID or
+private key is required. Enable **Allow GitHub Actions to create and approve
+pull requests** in Settings → Actions → General → Workflow permissions. The
+workflow requests Contents and Pull requests write access only for its update
+job. It creates a verified update PR and leaves merging to a maintainer.
+
+For these PRs, select **Approve workflows to run**, wait for `ci-ok`, and merge
+manually. GitHub requires approval for PR workflows started by `GITHUB_TOKEN`,
+and pushes made by that token do not trigger push workflows. A maintainer's
+merge starts main's CI and the release pipeline. See
+[GitHub's workflow triggering rules](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).
+
+For unattended CI and auto-merge, configure the optional GitHub App below.
+When both its ID and private key are present the updater uses an installation
+token. A partially configured App is an error, with the missing setting named
+in the log; it does not silently switch identities.
 
 The App needs only **Metadata: read**, **Contents: read/write** and **Pull
 requests: read/write**. It is deliberately given no Actions, Administration or
@@ -485,11 +506,21 @@ upstream availability, trust verification, packaging drift or runtime
 regression. A later scheduled run retries the same candidate without creating
 new issues.
 
+If configuration, checkout or discovery fails before a version is identified,
+the failure is recorded in Actions without opening a per-version issue. The
+updater checks the optional App configuration before trying to mint a token.
+When neither `UPDATER_APP_ID` nor `UPDATER_APP_PRIVATE_KEY` is set, it uses
+`GITHUB_TOKEN` instead.
+
 ## One-time repository setup
 
-These steps need repository-admin rights and are not automated.
+These steps need repository-admin rights. For the default `GITHUB_TOKEN` mode,
+enable PR creation as described above, create the `updater` environment with
+the `main` branch restriction in step 3, and configure branch protection in
+step 6. Creating an App and adding its credentials are only necessary for
+unattended updates.
 
-### 1. Create the GitHub App
+### 1. Optional: create the GitHub App
 
 At <https://github.com/settings/apps/new>:
 
@@ -504,7 +535,7 @@ At <https://github.com/settings/apps/new>:
 
 Do **not** grant Actions, Administration, Checks or any bypass permission.
 
-### 2. Install it on this repository only
+### 2. Optional: install it on this repository only
 
 App settings → *Install App* → select **only** `stslex/chatgpt-desktop-nix`.
 
@@ -521,7 +552,7 @@ Settings → Environments → New environment → `updater`, then under
 **Deployment branches and tags** choose *Selected branches and tags* and add a
 rule for exactly `main`. Nothing else.
 
-Only once that policy exists, add the key **to that environment**:
+For App mode, only once that policy exists, add the key **to that environment**:
 
 Settings → Environments → `updater` → Environment secrets → Add secret
 
@@ -531,7 +562,7 @@ Settings → Environments → `updater` → Environment secrets → Add secret
 Adding it before the branch policy exists leaves a window in which a dispatch
 against any ref could read it.
 
-### 4. Record the App's public identifiers
+### 4. Optional: record the App's public identifiers
 
 These are not secret and belong at repository scope:
 
@@ -612,12 +643,12 @@ nix flake check -L
 # Just the package.
 nix build .#chatgpt -L
 
-# The updater and ELF unit tests, without Nix.
+# The updater and ELF unit tests (Python needs PyYAML and zstandard; also gpg/ar).
 PYTHONPATH="$PWD/tools:$PWD" python3 -m unittest discover -s tests -v
 
-# Re-derive the signed metadata and compare it to what is committed.
-python3 tools/verify_sources.py            # metadata only
-python3 tools/verify_sources.py --strict   # also both .deb bodies (~790 MB)
+# Verify both pinned .deb bodies, signatures and control fields (~790 MB).
+python3 tools/verify_sources.py
+# --strict remains accepted for compatibility; body checks are always required.
 
 # Would an update be available?
 python3 tools/update.py --check

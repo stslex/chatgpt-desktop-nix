@@ -73,11 +73,12 @@ in
   # `ar` for the .deb fixtures, and zstandard so the zstd bomb case runs
   # rather than skipping.
   unit-tests = check "unit-tests"
-    [ pkgs.gnupg pkgs.binutils
-      (pkgs.python3.withPackages (ps: [ ps.zstandard ])) ] ''
+    [ pkgs.gnupg pkgs.binutils pkgs.git
+      (pkgs.python3.withPackages (ps: [ ps.zstandard ps.pyyaml ])) ] ''
     cp -r ${../tools} tools
     cp -r ${../tests} tests
     cp -r ${../trust} trust
+    cp -r ${../.github} .github
     cp ${../sources.json} sources.json
     chmod -R u+w .
     export PYTHONPATH="$PWD/tools:$PWD"

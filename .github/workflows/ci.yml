@@ -30,10 +30,9 @@ concurrency:
 
 jobs:
   # ---------------------------------------------------------------------
-  # Re-derive the signed source metadata from OpenAI's repository. This
-  # deliberately does not trust the committed sources.json: it repeats the
-  # whole chain and then asserts the committed file is what the chain
-  # produces.
+  # Verify the pinned packages' hashes, OpenAI signatures and signed control
+  # fields. New upstream versions must not invalidate an unchanged pin; the
+  # updater separately discovers releases through the fresh signed APT index.
   # ---------------------------------------------------------------------
   verify-signed-sources:
     name: Verify signed sources
@@ -59,7 +58,7 @@ jobs:
           bash tools/recover_base_sources.sh "$BASE_REF" base-sources.json \
             >> "$GITHUB_OUTPUT"
 
-      - name: Re-run the trust chain against the live origin
+      - name: Verify the pinned package signatures and metadata
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_PATH: ${{ steps.base.outputs.path }}
@@ -132,7 +131,7 @@ jobs:
           # gnupg for the signature fixtures, binutils for `ar` (the .deb
           # fixtures), zstandard so the zstd decompression-bomb case runs
           # rather than skipping.
-          sudo apt-get install -y gnupg binutils python3-zstandard
+          sudo apt-get install -y gnupg binutils python3-zstandard python3-yaml
       - name: Run updater and ELF tests
         run: PYTHONPATH="$PWD/tools:$PWD" python3 -m unittest discover -s tests -v
 
@@ -320,9 +319,10 @@ jobs:
             exit 0
           fi
 
-          out=$(nix build .#chatgpt --no-link --print-out-paths)
           shim=$(nix build .#chatgpt.bwrapShim --no-link --print-out-paths)
 
+          # The inner bash expands its own variables in this script.
+          # shellcheck disable=SC2016
           nix shell nixpkgs#gcc nixpkgs#patchelf nixpkgs#bubblewrap \
             nixpkgs#nix-ld --command bash -eu -c '
               case "${{ matrix.system }}" in
