@@ -609,7 +609,7 @@ in
     esac
 
     echo "tectonic (static)"
-    ${app}/resources/plugins/openai-bundled/plugins/latex/bin/tectonic --version
+    ${app}/resources/tectonic/tectonic --version
   '';
 
   node-glibc-detection = check "node-glibc-detection" [ pkgs.python3 ] ''
