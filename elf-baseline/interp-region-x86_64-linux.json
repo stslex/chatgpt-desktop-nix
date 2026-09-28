@@ -3,7 +3,7 @@
   "containingLoad": {
    "index": 1,
    "p_align": 4096,
-   "p_filesz": 65163452,
+   "p_filesz": 66592692,
    "p_flags": 4,
    "p_offset": 0,
    "p_vaddr": 0
@@ -18,12 +18,12 @@
    "shstrndx": 30
   },
   "fillerByte": 88,
-  "fillerLength": 209160,
+  "fillerLength": 221016,
   "fillerStart": 960,
   "interpSegments": 1,
   "prepatchInterp": {
    "p_filesz": 83,
-   "p_offset": 314945896
+   "p_offset": 319213496
   },
   "window": 2048
  }
