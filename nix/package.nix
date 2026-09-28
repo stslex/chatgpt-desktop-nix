@@ -40,9 +40,11 @@
 , mesa
 , nspr
 , nss
+, openssl
 , pango
 , pipewire
 , systemd
+, tpm2-tss
 , vulkan-loader
 , wayland
 , libx11
@@ -112,6 +114,11 @@ let
 
     # Crypto, secrets, devices
     nss nspr libsecret libusb1 systemd
+
+    # resources/native/remote-control-device-key.node (new in 26.924): a
+    # TPM-backed device key. DT_NEEDED libcrypto.so.3 and libtss2-{esys,mu,
+    # tcti-device}; upstream's Depends gained libssl3 and libtss2-* with it.
+    openssl tpm2-tss
 
     # Fonts and misc
     fontconfig freetype libnotify libxcrypt-legacy zlib curl
