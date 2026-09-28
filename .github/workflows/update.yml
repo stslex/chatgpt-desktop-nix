@@ -334,8 +334,9 @@ jobs:
           VERSION: ${{ steps.run.outputs.version }}
         run: |
           set -eu
+          # gh pr list returns 30 items unless told otherwise.
           gh pr list --base main --state open --label automated-upstream-update \
-            --json number,headRefName \
+            --limit 1000 --json number,headRefName \
             --jq ".[] | select(.headRefName != \"$BRANCH\" and (.headRefName | startswith(\"automation/chatgpt-\"))) | .number" \
             > superseded.txt
           while read -r old; do
