@@ -82,5 +82,62 @@ class TestEarlyFailureReporting(unittest.TestCase):
                     self.assertIn("No candidate to report", proc.stdout)
 
 
+class TestSupersededPullRequests(unittest.TestCase):
+    PRS = (
+        '[{"number": 9, "headRefName": "automation/chatgpt-26.917.71314"},'
+        ' {"number": 10, "headRefName": "automation/chatgpt-26.924.22138"},'
+        ' {"number": 11, "headRefName": "review/chatgpt-26.924.22138"}]'
+    )
+
+    def run_step(self, root: Path, list_status: str):
+        step = next(s for s in WORKFLOW["jobs"]["update"]["steps"]
+                    if s.get("id") == "supersede")
+        prs = root / "prs.json"
+        prs.write_text(self.PRS)
+        closed = root / "closed"
+        stub = root / "gh"
+        stub.write_text(
+            f"#!{shutil.which('bash')}\n"
+            'case "$1 $2" in\n'
+            '  "pr list")\n'
+            '    [ "$TEST_LIST_STATUS" = 0 ] || exit "$TEST_LIST_STATUS"\n'
+            '    while [ $# -gt 0 ]; do\n'
+            '      [ "$1" = --jq ] && { jq -r "$2" "$TEST_PRS"; exit; }\n'
+            '      shift\n'
+            '    done\n'
+            '    exit 98 ;;\n'
+            '  "pr close") printf "%s\\n" "$*" >> "$TEST_CLOSED" ;;\n'
+            '  *) exit 99 ;;\n'
+            'esac\n'
+        )
+        stub.chmod(0o755)
+        proc = subprocess.run(
+            ["bash", "-eu", "-c", step["run"]],
+            cwd=root,
+            env={"PATH": str(root) + os.pathsep + os.environ["PATH"],
+                 "BRANCH": "automation/chatgpt-26.924.22138",
+                 "VERSION": "26.924.22138", "PR_NUMBER": "10",
+                 "TEST_PRS": str(prs), "TEST_CLOSED": str(closed),
+                 "TEST_LIST_STATUS": list_status},
+            capture_output=True, text=True,
+        )
+        return proc, closed
+
+    def test_closes_only_other_automation_branches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc, closed = self.run_step(Path(tmp), "0")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(closed.read_text().splitlines(), [
+                "pr close 9 --delete-branch --comment "
+                "Superseded by #10 (26.924.22138).",
+            ])
+
+    def test_a_failed_listing_fails_the_step_and_closes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc, closed = self.run_step(Path(tmp), "4")
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertFalse(closed.exists())
+
+
 if __name__ == "__main__":
     unittest.main()
