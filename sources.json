@@ -4,24 +4,24 @@
   "suite": "stable",
   "component": "main",
   "package": "chatgpt",
-  "version": "26.924.22138",
+  "version": "26.1007.21434",
   "signingKeyFingerprint": "3BFA0E4AE8B8CC16A2D9BA684A3B4A566C4660E4",
   "architectures": {
     "amd64": {
       "debianArchitecture": "amd64",
-      "filename": "pool/main/c/chatgpt/chatgpt_26.924.22138_amd64.deb",
-      "url": "https://persistent.oaistatic.com/codex-app-prod/linux/deb/pool/main/c/chatgpt/chatgpt_26.924.22138_amd64.deb",
-      "size": 454131258,
-      "sha256": "ce3bb1aa82ccdfe3037ada2fd8d187796ea4a0d5ed031d0e4ec8adce8b7014e7",
-      "hash": "sha256-zjuxqoLM3+MDetov2NGHeW6koNXtAx0OTsitzotwFOc="
+      "filename": "pool/main/c/chatgpt/chatgpt_26.1007.21434_amd64.deb",
+      "url": "https://persistent.oaistatic.com/codex-app-prod/linux/deb/pool/main/c/chatgpt/chatgpt_26.1007.21434_amd64.deb",
+      "size": 497075610,
+      "sha256": "276b5341c3d74b261d3ad52106f7fa7edde06841e4767fe2a40cb54099b1f3ed",
+      "hash": "sha256-J2tTQcPXSyYdOtUhBvf6ft3gaEHkdn/ipAy1QJmx8+0="
     },
     "arm64": {
       "debianArchitecture": "arm64",
-      "filename": "pool/main/c/chatgpt/chatgpt_26.924.22138_arm64.deb",
-      "url": "https://persistent.oaistatic.com/codex-app-prod/linux/deb/pool/main/c/chatgpt/chatgpt_26.924.22138_arm64.deb",
-      "size": 431902234,
-      "sha256": "6570f078c5ea25461ce103b2e31fa7dd6c5e717136fa9237c701d22db62b5e3f",
-      "hash": "sha256-ZXDweMXqJUYc4QOy4x+n3WxecXE2+pI3xwHSLbYrXj8="
+      "filename": "pool/main/c/chatgpt/chatgpt_26.1007.21434_arm64.deb",
+      "url": "https://persistent.oaistatic.com/codex-app-prod/linux/deb/pool/main/c/chatgpt/chatgpt_26.1007.21434_arm64.deb",
+      "size": 475083462,
+      "sha256": "55fae1e3fb1d6069a90620e9e70737dcf8bf2255604d157e282cc6748a1baf49",
+      "hash": "sha256-Vfrh4/sdYGmpBiDp5wc33Pi/IlVgTRV+KCzGdIobr0k="
     }
   }
 }
