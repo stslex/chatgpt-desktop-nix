@@ -19,12 +19,12 @@ let
     int main(void) { printf("GENERIC-BINARY-RAN-OK\n"); return 0; }
     EOF
     cc -O0 -o "$out/bin/probe" probe.c
-    ${pkgs.patchelf}/bin/patchelf \
+    ${chatgpt.patchelf}/bin/patchelf \
       --set-interpreter ${genericInterpreter} \
       --set-rpath "" "$out/bin/probe"
     # Assert it really is generic: a probe still pointing into the store would
     # run regardless of the bridge and prove nothing.
-    got="$(${pkgs.patchelf}/bin/patchelf --print-interpreter "$out/bin/probe")"
+    got="$(${chatgpt.patchelf}/bin/patchelf --print-interpreter "$out/bin/probe")"
     if [ "$got" != "${genericInterpreter}" ]; then
       echo "probe interpreter is $got, expected ${genericInterpreter}" >&2
       exit 1

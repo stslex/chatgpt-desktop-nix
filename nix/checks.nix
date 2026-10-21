@@ -502,7 +502,7 @@ in
 
   # --- dynamic linking ----------------------------------------------------
 
-  runtime-deps = check "runtime-deps" [ pkgs.python3 pkgs.glibc.bin pkgs.patchelf ] ''
+  runtime-deps = check "runtime-deps" [ pkgs.python3 pkgs.glibc.bin chatgpt.patchelf ] ''
     echo "every patched ELF must resolve all of its DT_NEEDED entries"
     python3 - <<'PY'
     import json, subprocess, sys, os
@@ -555,7 +555,7 @@ in
     PY
   '';
 
-  origin-runpath = check "origin-runpath" [ pkgs.patchelf pkgs.python3 ] ''
+  origin-runpath = check "origin-runpath" [ chatgpt.patchelf pkgs.python3 ] ''
     echo "native modules must keep their \$ORIGIN lookups first"
     sharp=$(find ${app}/resources -name 'sharp-linux-*.node' | head -1)
     if [ -n "$sharp" ]; then

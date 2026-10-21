@@ -4,6 +4,8 @@
 , runCommandCC
 
 , dpkg
+  # Pinned by flake.nix (patchelfFor); the reviewed interp-region invariant
+  # holds only for that version's layout.
 , patchelf
 , python3
 , desktop-file-utils
@@ -348,7 +350,8 @@ stdenv.mkDerivation (finalAttrs: {
   '';
 
   passthru = {
-    inherit bwrapShim bwrapShimTest sources toolsDir;
+    # patchelf: the one this build used, so checks inspect it with the same.
+    inherit bwrapShim bwrapShimTest patchelf sources toolsDir;
     updateScript = "${toolsDir}/update.py";
   };
 
