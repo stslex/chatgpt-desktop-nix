@@ -20,16 +20,35 @@
         config.allowUnfreePredicate = pkg:
           builtins.elem (nixpkgs.lib.getName pkg) [ "chatgpt-desktop" ];
       };
+
+      # The package always builds with patchelf 0.15.2, whatever nixpkgs this
+      # flake follows. The reviewed interp-region invariant
+      # (elf-baseline/interp-region-*.json) describes the space 0.15.2 vacates
+      # in ChatGPT; 0.19.2 lays the file out differently, leaves a 0-byte
+      # filler run, and the build's guard refuses it. That is the guard doing
+      # its job. Drop or bump this pin only together with a re-reviewed
+      # invariant, never on its own.
+      patchelfFor = pkgs: pkgs.patchelf.overrideAttrs (finalAttrs: _: {
+        version = "0.15.2";
+        src = pkgs.fetchurl {
+          url = "https://github.com/NixOS/patchelf/releases/download/${finalAttrs.version}/patchelf-${finalAttrs.version}.tar.bz2";
+          hash = "sha256-F3RfVkFZyOIo/EEtplogSLhGxLa0Igt3y/IkFuAvLXw=";
+        };
+      });
     in
     {
       overlays.default = final: prev: {
-        chatgpt-desktop = final.callPackage ./nix/package.nix { };
+        chatgpt-desktop = final.callPackage ./nix/package.nix {
+          patchelf = patchelfFor final;
+        };
       };
 
       packages = forAllSystems (system:
         let pkgs = pkgsFor system; in
         rec {
-          chatgpt = pkgs.callPackage ./nix/package.nix { };
+          chatgpt = pkgs.callPackage ./nix/package.nix {
+            patchelf = patchelfFor pkgs;
+          };
           default = chatgpt;
         });
 
@@ -63,7 +82,7 @@
           default = pkgs.mkShell {
             packages = with pkgs; [
               (python3.withPackages (ps: [ ps.zstandard ps.pyyaml ]))
-              gnupg patchelf dpkg desktop-file-utils
+              gnupg (patchelfFor pkgs) dpkg desktop-file-utils
               jq nix-prefetch bubblewrap
             ];
             shellHook = ''
