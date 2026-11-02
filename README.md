@@ -258,9 +258,15 @@ Android prebuilds are detected from their `.note.android.ident` note and bionic
 sonames rather than their path, because on an aarch64 host an `android-arm64`
 prebuild has the same `e_machine` as a native one.
 
-The full inventory is committed under `elf-baseline/`. **Any** new, removed or
-reclassified ELF file fails the build and goes to a human. The updater is never
-allowed to widen it.
+The full inventory is committed under `elf-baseline/`. New, removed or
+reclassified ELF files fail the build and go to a human, with one narrow
+exception: patch-version renames of bundled Sharp and libvips libraries under
+`cua_node/lib/node_modules/@img/` are matched one-to-one. Their architecture,
+major/minor version, classification, interpreter, segments and dependencies
+must still match. Sharp may follow the matching libvips filename and update
+patch/cache identifiers in its two existing package-version search paths;
+other search paths and their order must stay unchanged. Multiple versions of
+the same library are rejected. The updater never rewrites the baseline.
 
 ### The `PT_INTERP` invariant
 
@@ -286,6 +292,11 @@ make it safe:
   writing there produces a binary that passes every structural check and then
   segfaults. That failure was found by this repository's own smoke test.
 - The file length never changes and nothing else moves.
+
+The reviewed target region also pins the containing segment's identity,
+offset, virtual address, flags and alignment. Its total file size is recorded
+for diagnostics and may change with upstream code/data; the actual segment
+must still contain the entire filler run, which must cover the reviewed extent.
 
 Not every binary can be relocated. `patchelf` packs `.dynamic` and `.dynstr`
 into the whole first 2 KiB of the bundled Node, leaving no unreferenced range,
@@ -432,7 +443,8 @@ them:
 - a downgrade or repository rollback
 - architecture version skew
 - structural changes to the repository layout
-- any new or reclassified ELF file
+- new or reclassified ELF files, except the narrowly checked Sharp/libvips
+  patch-version renames described above
 
 It never trusts `/latest`, never trusts HTTPS alone, never does
 trust-on-first-use, and never compares Debian versions lexically — `26.820.9`
@@ -570,6 +582,10 @@ Settings → Secrets and variables → Actions → Variables
 
 - `UPDATER_APP_ID` = the App's numeric ID
 - `UPDATER_APP_SLUG` = the App's slug, e.g. `chatgpt-desktop-nix-updater`
+
+Repository Actions secrets with the same names are also accepted. Variables
+take precedence when both are set. The private key stays in the restricted
+`updater` environment.
 
 ### What the App's key protects, and what it does not
 

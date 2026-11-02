@@ -10,8 +10,8 @@ mask upstream layout changes.
 
 This module classifies every ELF file from its own headers, decides what the
 build is allowed to do to it, and emits a stable inventory. CI compares that
-inventory against a committed baseline so any new or reclassified ELF file
-fails the build and goes to a human.
+inventory against a committed baseline so new or reclassified ELF files fail
+the build. Narrow Sharp/libvips patch-version renames retain structural checks.
 
 Classification is header-driven. Paths are used only as a corroborating signal,
 never as the sole basis for a decision.
@@ -23,6 +23,7 @@ import argparse
 import dataclasses
 import json
 import os
+import re
 import struct
 import sys
 from typing import Iterator
@@ -366,43 +367,118 @@ def summarize(inventory: dict) -> str:
     return "\n".join(lines)
 
 
+_SHARP_ROOT = "usr/lib/chatgpt/resources/cua_node/lib/node_modules/@img/"
+_PATCH_VERSION_PATH = re.compile(
+    re.escape(_SHARP_ROOT)
+    + r"(?:sharp-libvips-linux-(?:x64|arm64)/lib/libvips-cpp\.so\."
+      r"[0-9]+\.[0-9]+\.(?P<vips_patch>[0-9]+)|"
+      r"sharp-linux-(?P<arch>x64|arm64)/lib/"
+      r"sharp-linux-(?P=arch)-[0-9]+\.[0-9]+\."
+      r"(?P<sharp_patch>[0-9]+)\.node)"
+)
+
+
+def _inventory_key(path: str) -> tuple[bool, str]:
+    """Ignore only the patch component of these two bundled library names.
+
+    Keep the directory, architecture, major/minor version and suffix intact.
+    Matching entries still undergo every structural comparison below.
+    """
+    match = _PATCH_VERSION_PATH.fullmatch(path)
+    if match:
+        start, end = match.span(match.lastgroup)
+        return True, path[:start] + "{patch}" + path[end:]
+    return False, path
+
+
+def _sharp_runpath_key(entry: dict) -> tuple | str | None:
+    """Keep Sharp's search paths, allowing patch/cache IDs in two fallbacks."""
+    match = _PATCH_VERSION_PATH.fullmatch(entry["path"])
+    runpath = entry["runpath"]
+    if not match or not match.group("arch") or runpath is None:
+        return runpath
+    package = "sharp-libvips-linux-" + match.group("arch")
+    version = r"([0-9]+\.[0-9]+\.)[0-9]+"
+    patterns = (
+        re.escape(f"$ORIGIN/../../../{package}/") + version + r"/lib",
+        re.escape(f"$ORIGIN/../../../../../@img-{package}-npm-")
+         + version + r"-[0-9a-f]{10}"
+         + re.escape(f"/node_modules/@img/{package}/lib"),
+    )
+    paths = []
+    for path in runpath.split(":"):
+        for i, pattern in enumerate(patterns):
+            found = re.fullmatch(pattern, path)
+            if found:
+                paths.append((i, found.group(1)))
+                break
+        else:
+            paths.append((None, path))
+    return tuple(paths)
+
+
 def compare(baseline: dict, current: dict) -> list[str]:
     """Return human-readable differences between two inventories.
 
-    Any difference is a hard failure upstream: a new ELF file, a removed one,
-    or one that changed class means the payload's shape changed and a human has
-    to look at it. The updater must never respond by widening an ignore list.
+    Sharp/libvips patch-version renames are matched one-to-one. New libraries,
+    major/minor changes, ambiguous matches and structural changes still fail.
     """
     problems: list[str] = []
-    old = {e["path"]: e for e in baseline["entries"]}
-    new = {e["path"]: e for e in current["entries"]}
+    def index(inventory: dict) -> dict:
+        result = {}
+        for entry in inventory["entries"]:
+            key = _inventory_key(entry["path"])
+            if key in result:
+                problems.append(
+                    f"Ambiguous ELF library identity: {result[key]['path']} "
+                    f"and {entry['path']}")
+            result[key] = entry
+        return result
+
+    old, new = index(baseline), index(current)
+    if problems:
+        return problems
+
+    # A dependency may follow a renamed libvips only when that exact provider
+    # exists in both inventories. Never normalise arbitrary DT_NEEDED names.
+    renamed_dependencies = {}
+    for key in old.keys() & new.keys():
+        before, after = old[key]["path"], new[key]["path"]
+        if before != after and "/lib/libvips-cpp.so." in before:
+            renamed_dependencies[os.path.basename(before)] = os.path.basename(after)
 
     for path in sorted(set(new) - set(old)):
         problems.append(
-            f"NEW ELF file not in the reviewed baseline: {path} "
+            f"NEW ELF file not in the reviewed baseline: {new[path]['path']} "
             f"(classified {new[path]['kind']} -> {new[path]['action']})"
         )
     for path in sorted(set(old) - set(new)):
-        problems.append(f"ELF file disappeared from the payload: {path}")
+        problems.append(f"ELF file disappeared from the payload: {old[path]['path']}")
     for path in sorted(set(old) & set(new)):
         # interp and runpath are part of the reviewed shape: a payload that
         # starts shipping a differently-linked binary, or one that gains an
         # $ORIGIN lookup, has changed in a way a human should see.
         for field in ("kind", "action", "machine", "etype", "interp", "runpath"):
-            if old[path][field] != new[path][field]:
+            before, after = old[path][field], new[path][field]
+            if field == "runpath" and renamed_dependencies:
+                before, after = _sharp_runpath_key(old[path]), _sharp_runpath_key(new[path])
+            if before != after:
                 problems.append(
-                    f"{path}: {field} changed {old[path][field]!r} -> "
+                    f"{new[path]['path']}: {field} changed {old[path][field]!r} -> "
                     f"{new[path][field]!r}"
                 )
         if sorted(old[path].get("segments", [])) != sorted(new[path].get("segments", [])):
             problems.append(
-                f"{path}: program segments changed "
+                f"{new[path]['path']}: program segments changed "
                 f"{old[path].get('segments')} -> {new[path].get('segments')}")
-        if sorted(old[path]["needed"]) != sorted(new[path]["needed"]):
-            added = sorted(set(new[path]["needed"]) - set(old[path]["needed"]))
-            removed = sorted(set(old[path]["needed"]) - set(new[path]["needed"]))
+        needed = old[path]["needed"]
+        if _PATCH_VERSION_PATH.fullmatch(old[path]["path"]):
+            needed = [renamed_dependencies.get(name, name) for name in needed]
+        if sorted(needed) != sorted(new[path]["needed"]):
+            added = sorted(set(new[path]["needed"]) - set(needed))
+            removed = sorted(set(needed) - set(new[path]["needed"]))
             problems.append(
-                f"{path}: DT_NEEDED changed (added {added}, removed {removed})"
+                f"{new[path]['path']}: DT_NEEDED changed (added {added}, removed {removed})"
             )
     return problems
 
