@@ -462,6 +462,14 @@ def assert_region_invariant(elf: Elf64, expected: dict) -> tuple[int, int]:
         problems.append("the filler run is not inside a PT_LOAD segment")
     else:
         for key, want in want_load.items():
+            # The segment includes upstream code/data beyond the reviewed
+            # filler, so its total size changes across ordinary releases.
+            # describe_target_region already proved that the actual segment
+            # contains the entire observed filler run, and the checks above
+            # require that run to cover the reviewed extent. Its far endpoint
+            # is diagnostic metadata, not a constraint on the target bytes.
+            if key == "p_filesz":
+                continue
             if got_load.get(key) != want:
                 problems.append(
                     f"containing PT_LOAD {key}: expected {want}, got "

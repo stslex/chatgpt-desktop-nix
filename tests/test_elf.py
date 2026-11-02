@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import os
 import copy
+import json
+from pathlib import Path
 import struct
 import tempfile
 import unittest
@@ -273,6 +275,115 @@ class TestInventoryDrift(unittest.TestCase):
         new["entries"][0]["needed"] = ["libnew.so.1"]
         problems = C.compare(self.base(), new)
         self.assertTrue(any("DT_NEEDED changed" in p for p in problems))
+
+
+class TestLibraryPatchRenames(unittest.TestCase):
+    def fixture(self, system="x86_64-linux"):
+        baseline = json.loads((Path(__file__).resolve().parents[1]
+                               / "elf-baseline" / f"{system}.json").read_text())
+        current = copy.deepcopy(baseline)
+        for entry in current["entries"]:
+            if "/@img/" in entry["path"]:
+                entry["path"] = entry["path"].replace(
+                    "8.18.6", "8.18.7").replace("0.35.4", "0.35.5")
+                entry["needed"] = [name.replace("8.18.6", "8.18.7")
+                                   for name in entry["needed"]]
+                if entry["runpath"]:
+                    entry["runpath"] = entry["runpath"].replace(
+                        "1.3.3", "1.3.4").replace("3b9999d71f", "28ab0da74d").replace(
+                        "bf2433b8d9", "012345abcd")
+        return baseline, current
+
+    def sharp(self, inventory):
+        return next(e for e in inventory["entries"]
+                    if "/@img/sharp-linux-" in e["path"])
+
+    def test_patch_renames_with_their_actual_provider_pass_on_both_architectures(self):
+        for system in ("x86_64-linux", "aarch64-linux"):
+            with self.subTest(system=system):
+                self.assertEqual(C.compare(*self.fixture(system)), [])
+
+    def test_renamed_libraries_still_require_the_reviewed_structure(self):
+        for field, value in (
+            ("machine", "riscv"), ("kind", "static"),
+            ("action", "leave-alone"), ("etype", "EXEC"),
+            ("interp", "/other/loader"), ("runpath", "$ORIGIN/other"),
+            ("segments", ["LOAD"]), ("needed", ["libunreviewed.so.1"]),
+        ):
+            with self.subTest(field=field):
+                baseline, current = self.fixture()
+                self.sharp(current)[field] = value
+                self.assertTrue(C.compare(baseline, current))
+
+    def test_major_minor_and_directory_changes_need_review(self):
+        for before, after in (("0.35.5", "0.36.0"), ("8.18.7", "9.18.7"),
+                              ("/cua_node/", "/other_node/"),
+                              ("sharp-linux-x64-", "sharp-linux-arm64-")):
+            with self.subTest(after=after):
+                baseline, current = self.fixture()
+                for entry in current["entries"]:
+                    entry["path"] = entry["path"].replace(before, after)
+                self.assertTrue(C.compare(baseline, current))
+
+    def test_search_paths_cannot_gain_or_change_directories_or_minor_versions(self):
+        for before, after in (("1.3.4", "1.4.0"),
+                              ("$ORIGIN/../../", "$ORIGIN/../"),
+                              ("$ORIGIN/", "/tmp/"),
+                              ("/lib:", "/other:")):
+            with self.subTest(after=after):
+                baseline, current = self.fixture()
+                sharp = self.sharp(current)
+                sharp["runpath"] = sharp["runpath"].replace(before, after)
+                self.assertTrue(C.compare(baseline, current))
+        baseline, current = self.fixture()
+        self.sharp(current)["runpath"] += ":$ORIGIN/extra"
+        self.assertTrue(C.compare(baseline, current))
+
+    def test_new_dependency_without_a_matching_provider_is_rejected(self):
+        baseline, current = self.fixture()
+        current["entries"] = [e for e in current["entries"]
+                              if "/lib/libvips-cpp.so." not in e["path"]]
+        self.assertTrue(C.compare(baseline, current))
+
+    def test_dependency_rename_outside_sharp_is_not_normalised(self):
+        baseline, current = self.fixture()
+        for inventory, version in ((baseline, "8.18.6"), (current, "8.18.7")):
+            entry = copy.deepcopy(self.sharp(inventory))
+            entry["path"] = "usr/lib/chatgpt/other.node"
+            entry["needed"] = [f"libvips-cpp.so.{version}"]
+            inventory["entries"].append(entry)
+        self.assertTrue(any("DT_NEEDED changed" in p
+                            for p in C.compare(baseline, current)))
+
+    def test_multiple_versions_cannot_hide_behind_one_identity(self):
+        for side in (0, 1):
+            with self.subTest(side=side):
+                inventories = self.fixture()
+                entry = copy.deepcopy(self.sharp(inventories[side]))
+                entry["path"] = entry["path"].replace("0.35.4", "0.35.99").replace(
+                    "0.35.5", "0.35.99")
+                inventories[side]["entries"].append(entry)
+                self.assertTrue(any("Ambiguous" in p for p in C.compare(*inventories)))
+
+    def test_library_suffixes_are_not_interchangeable(self):
+        baseline, current = self.fixture()
+        self.sharp(current)["path"] = self.sharp(current)["path"].removesuffix(".node")
+        self.assertTrue(C.compare(baseline, current))
+        baseline, current = self.fixture()
+        for entry in current["entries"]:
+            if "/lib/libvips-cpp.so." in entry["path"]:
+                entry["path"] += ".node"
+        self.assertTrue(C.compare(baseline, current))
+
+    def test_literal_normalisation_markers_are_not_valid_versions(self):
+        baseline, current = self.fixture()
+        sharp = self.sharp(current)
+        sharp["path"] = sharp["path"].replace("0.35.5", "0.35.{patch}")
+        self.assertTrue(C.compare(baseline, current))
+        baseline, current = self.fixture()
+        sharp = self.sharp(current)
+        sharp["runpath"] = sharp["runpath"].replace("1.3.4", "1.3.{patch}")
+        self.assertTrue(C.compare(baseline, current))
 
 
 class TestDetectLibcSimulation(ElfTempMixin):
@@ -617,6 +728,28 @@ class TestRegionInvariant(ElfTempMixin):
         self.assertEqual(
             length, shrunk["fillerLength"],
             "the search window grew past the reviewed extent")
+
+    def test_segment_size_outside_the_target_region_may_change(self):
+        for difference in (-1024, 4096):
+            with self.subTest(difference=difference):
+                path = self.build()
+                region = R.describe_target_region(R.Elf64(path))
+                region["containingLoad"]["p_filesz"] += difference
+                report = R.relocate(path, verbose=False, expect_region=region)
+                self.assertTrue(report["moved"])
+                self.assertEqual(R.simulate_detect_libc(path), "glibc")
+
+    def test_segment_must_still_contain_the_whole_filler_region(self):
+        path = self.build()
+        elf = R.Elf64(path)
+        region = R.describe_target_region(elf)
+        load_index = region["containingLoad"]["index"]
+        struct.pack_into("<Q", elf.data, elf._ph_base(load_index) + 32,
+                         region["fillerStart"] + region["fillerLength"] - 1)
+        elf.save()
+        with self.assertRaises(R.RelocationError) as ctx:
+            R.relocate(path, verbose=False, expect_region=region)
+        self.assertIn("not inside a PT_LOAD", str(ctx.exception))
 
     def test_a_shorter_run_than_reviewed_is_still_refused(self):
         # Clamping must not turn the shortness check into a no-op: a run

@@ -78,6 +78,7 @@ in
     cp -r ${../tools} tools
     cp -r ${../tests} tests
     cp -r ${../trust} trust
+    cp -r ${../elf-baseline} elf-baseline
     cp -r ${../.github} .github
     cp ${../sources.json} sources.json
     chmod -R u+w .
